@@ -42,12 +42,16 @@ pub struct Transcript {
 /// Where Claude Code will write a session's transcript for a given working directory
 /// (the project slug replaces every non-alphanumeric character with '-').
 pub fn expected_path(cwd: &str, session_id: &str) -> Result<PathBuf> {
+    expected_path_in(&claude_dir()?, cwd, session_id)
+}
+
+fn expected_path_in(root: &Path, cwd: &str, session_id: &str) -> Result<PathBuf> {
     validate_session_id(session_id)?;
     let slug: String = cwd
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
-    Ok(claude_dir()?
+    Ok(root
         .join("projects")
         .join(slug)
         .join(format!("{session_id}.jsonl")))
@@ -523,7 +527,12 @@ mod tests {
 
     #[test]
     fn expected_path_slugs_every_non_alphanumeric() {
-        let p = expected_path("/Users/me/Documents/my_project", "abc").unwrap();
+        let p = expected_path_in(
+            Path::new("/fictional/.claude"),
+            "/Users/me/Documents/my_project",
+            "abc",
+        )
+        .unwrap();
         let s = p.to_string_lossy().replace('\\', "/");
         assert!(
             s.ends_with("/.claude/projects/-Users-me-Documents-my-project/abc.jsonl"),
