@@ -527,10 +527,71 @@ struct App {
     inspect: bool,
     graph: bool,
     selection: usize,
+    todos: todos::Store,
+    todo_mode: bool,
+    todo_input: Option<String>,
     tx: Sender<Msg>,
 }
 
 impl App {
+    fn row_count(&self) -> usize {
+        if self.todo_mode {
+            self.todos.items.len()
+        } else {
+            view::navigation_rows(&self.cache.summary, &self.focus(), self.graph).len()
+        }
+    }
+
+    fn reload_todos(&mut self) {
+        match todos::path(&self.session_id).and_then(|p| todos::load(&p)) {
+            Ok(store) => self.todos = store,
+            Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+
+    fn edit_todos(&mut self, change: impl FnOnce(&mut todos::Store, usize, u64) -> Result<()>) {
+        let result = (|| {
+            let mut current = Transcript::open(&self.tr.path);
+            current.read_new()?;
+            let count = current.turns.len();
+            todos::edit(&todos::path(&self.session_id)?, |store| {
+                change(store, count, current.fingerprint(count))
+            })
+        })();
+        match result {
+            Ok(store) => {
+                self.todos = store;
+                self.error = None;
+            }
+            Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+
+    fn todo_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => self.todo_input = None,
+            KeyCode::Enter => {
+                let text = self.todo_input.take().unwrap_or_default();
+                self.edit_todos(|s, n, hash| s.add(&text, n, hash));
+                self.todo_mode = true;
+                self.selection = self.todos.items.len().saturating_sub(1);
+            }
+            KeyCode::Backspace => {
+                if let Some(text) = &mut self.todo_input {
+                    text.pop();
+                }
+            }
+            KeyCode::Char(c) if !c.is_control() => {
+                if let Some(text) = &mut self.todo_input {
+                    if text.chars().count() < 500 {
+                        text.push(c);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn finish_summary(
         &mut self,
         result: Result<Summary>,
@@ -648,6 +709,7 @@ fn run(cli: Cli) -> Result<()> {
         });
 
     let watched_path = Arc::new(Mutex::new(tr.path.clone()));
+    let todos = todos::load(&todos::path(&session_id)?)?;
     let mut app = App {
         session_id,
         client,
@@ -672,6 +734,9 @@ fn run(cli: Cli) -> Result<()> {
         inspect: false,
         graph: false,
         selection: 0,
+        todos,
+        todo_mode: false,
+        todo_input: None,
         tx: tx.clone(),
     };
 
@@ -798,17 +863,22 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
     draw(app, terminal)?;
     loop {
         let msg = rx.recv_timeout(Duration::from_secs(1)).unwrap_or(Msg::Tick);
-        let previous_view = (app.selection, app.inspect, app.graph, app.focus());
+        let previous_view = (
+            app.selection,
+            app.inspect,
+            app.graph,
+            app.todo_mode,
+            app.focus(),
+        );
         match msg {
             Msg::Mouse(mouse) => {
-                if app.inspect || app.graph {
+                if app.inspect || app.graph || app.todo_mode {
                     match mouse.kind {
                         MouseEventKind::ScrollDown => {
-                            app.selection = app.selection.saturating_add(1).min(
-                                view::navigation_rows(&app.cache.summary, &app.focus(), app.graph)
-                                    .len()
-                                    .saturating_sub(1),
-                            )
+                            app.selection = app
+                                .selection
+                                .saturating_add(1)
+                                .min(app.row_count().saturating_sub(1))
                         }
                         MouseEventKind::ScrollUp => app.selection = app.selection.saturating_sub(1),
                         MouseEventKind::Down(event::MouseButton::Left) => {
@@ -821,15 +891,7 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
                                 mouse.column,
                                 mouse.row,
                             ) {
-                                app.selection = index.min(
-                                    view::navigation_rows(
-                                        &app.cache.summary,
-                                        &app.focus(),
-                                        app.graph,
-                                    )
-                                    .len()
-                                    .saturating_sub(1),
-                                );
+                                app.selection = index.min(app.row_count().saturating_sub(1));
                             }
                         }
                         _ => {}
@@ -859,6 +921,14 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
                 app.agent_status = Some(s);
                 follow_session_change(app);
             }
+            Msg::Key(KeyCode::Char('c'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+                return Ok(())
+            }
+            Msg::Key(code, mods) if app.todo_input.is_some() => {
+                if !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+                    app.todo_key(code);
+                }
+            }
             Msg::Key(code, _)
                 if app.offer && matches!(code, KeyCode::Char('y') | KeyCode::Char('Y')) =>
             {
@@ -878,6 +948,32 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
                 let _ = setup::record_offer("declined");
             }
             Msg::Key(code, mods) => match code {
+                KeyCode::Char('a') => {
+                    app.todo_input = Some(String::new());
+                }
+                KeyCode::Char('t') => {
+                    app.todo_mode = !app.todo_mode;
+                    app.inspect = false;
+                    app.graph = false;
+                    app.selection = 0;
+                }
+                KeyCode::Char('x') | KeyCode::Char('d') if app.todo_mode => {
+                    if let Some(item) = app.todos.items.get(app.selection).cloned() {
+                        app.edit_todos(|store, n, hash| {
+                            if code == KeyCode::Char('d') {
+                                store.delete(&item.id)
+                            } else {
+                                let status = if item.status == todos::Status::Done {
+                                    todos::Status::Pending
+                                } else {
+                                    todos::Status::Done
+                                };
+                                store.set(&item.id, status, n, hash)
+                            }
+                        });
+                    }
+                }
+                KeyCode::Esc if app.todo_mode => app.todo_mode = false,
                 KeyCode::Esc if app.inspect || app.graph => {
                     app.inspect = false;
                     app.graph = false;
@@ -894,29 +990,31 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
                         .min(app.tr.turns.len().saturating_sub(1));
                 }
                 KeyCode::Char('e') | KeyCode::Enter => {
+                    app.todo_mode = false;
                     app.inspect = !app.inspect;
                     app.graph = false;
                 }
                 KeyCode::Char('g') => {
+                    app.todo_mode = false;
                     app.graph = !app.graph;
                     app.inspect = false;
                     app.selection = 0;
                 }
                 KeyCode::Down => {
-                    app.inspect = !app.graph;
-                    app.selection = app.selection.saturating_add(1).min(
-                        view::navigation_rows(&app.cache.summary, &app.focus(), app.graph)
-                            .len()
-                            .saturating_sub(1),
-                    );
+                    app.inspect = !app.graph && !app.todo_mode;
+                    app.selection = app
+                        .selection
+                        .saturating_add(1)
+                        .min(app.row_count().saturating_sub(1));
                 }
                 KeyCode::Up => {
-                    app.inspect = !app.graph;
+                    app.inspect = !app.graph && !app.todo_mode;
                     app.selection = app.selection.saturating_sub(1);
                 }
                 KeyCode::Char('j') => app.scroll = app.scroll.saturating_add(1),
                 KeyCode::Char('k') => app.scroll = app.scroll.saturating_sub(1),
                 KeyCode::Char('v') => {
+                    app.todo_mode = false;
                     app.inspect = false;
                     app.graph = false;
                     app.rail = !app.rail;
@@ -936,7 +1034,7 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
                 }
                 _ => {}
             },
-            Msg::Tick => {}
+            Msg::Tick => app.reload_todos(),
             Msg::Summary(result, turns_done, generation, snapshot) => {
                 let updates = result
                     .as_ref()
@@ -961,12 +1059,16 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
                 }
             }
         }
-        app.selection = app.selection.min(
-            view::navigation_rows(&app.cache.summary, &app.focus(), app.graph)
-                .len()
-                .saturating_sub(1),
-        );
-        if previous_view != (app.selection, app.inspect, app.graph, app.focus()) {
+        app.selection = app.selection.min(app.row_count().saturating_sub(1));
+        if previous_view
+            != (
+                app.selection,
+                app.inspect,
+                app.graph,
+                app.todo_mode,
+                app.focus(),
+            )
+        {
             app.scroll = 0;
         }
         maybe_summarize(app);
@@ -1015,6 +1117,9 @@ fn follow_session_change(app: &mut App) {
     }
     app.tr = tr;
     app.session_id = sid;
+    app.todos = todos::Store::default();
+    app.reload_todos();
+    app.todo_input = None;
     app.generation = app.generation.wrapping_add(1);
     app.analyzing = false;
     app.last_summary_started = None;
@@ -1103,6 +1208,9 @@ fn draw(app: &App, terminal: &mut Term) -> Result<()> {
         graph: app.graph,
         selection: app.selection,
         transcript: &app.tr,
+        todos: &app.todos.items,
+        todo_mode: app.todo_mode,
+        todo_input: app.todo_input.as_deref(),
     };
     terminal.draw(|f| view::draw(f, &state))?;
     Ok(())
@@ -1140,6 +1248,9 @@ mod tests {
             inspect: false,
             graph: false,
             selection: 0,
+            todos: todos::Store::default(),
+            todo_mode: false,
+            todo_input: None,
             tx,
         };
         let old = Summary {

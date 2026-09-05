@@ -34,6 +34,9 @@ pub struct ViewState<'a> {
     pub graph: bool,
     pub selection: usize,
     pub transcript: &'a crate::transcript::Transcript,
+    pub todos: &'a [crate::todos::Todo],
+    pub todo_mode: bool,
+    pub todo_input: Option<&'a str>,
 }
 
 const ACCENT: Color = Color::Cyan;
@@ -119,9 +122,9 @@ pub fn draw(f: &mut Frame, s: &ViewState) {
         f.render_widget(banner, chunks[0]);
     }
 
-    if s.inspect || s.graph {
+    if s.inspect || s.graph || s.todo_mode {
         draw_navigation(f, s, chunks[1]);
-        f.render_widget(footer(s), chunks[2]);
+        f.render_widget(footer(s, area.width), chunks[2]);
         return;
     }
 
@@ -152,7 +155,7 @@ pub fn draw(f: &mut Frame, s: &ViewState) {
             .scroll((s.scroll, 0))
     };
     f.render_widget(body, chunks[1]);
-    f.render_widget(footer(s), chunks[2]);
+    f.render_widget(footer(s, area.width), chunks[2]);
 }
 
 pub fn navigation_rows(
@@ -217,15 +220,39 @@ fn draw_navigation(f: &mut Frame, s: &ViewState, area: Rect) {
     let [header, list_area, drawer] = navigation_areas(area);
     f.render_widget(
         Paragraph::new(s.summary.topline.as_str()).block(
-            Block::default().borders(Borders::ALL).title(if s.graph {
-                " SESSION GRAPH "
-            } else {
-                " EXPLORE ITEMS "
-            }),
+            Block::default()
+                .borders(Borders::ALL)
+                .title(if s.todo_mode {
+                    " MY TODOS · a add · x toggle · d delete "
+                } else if s.graph {
+                    " SESSION GRAPH "
+                } else {
+                    " EXPLORE ITEMS "
+                }),
         ),
         header,
     );
-    let rows = navigation_rows(s.summary, &s.focus, s.graph);
+    let rows = if s.todo_mode {
+        s.todos
+            .iter()
+            .map(|t| {
+                (
+                    crate::evidence::Node {
+                        id: t.id.clone(),
+                        text: format!("{} {}", plan_glyph(t.status.label()).0, t.text),
+                        kind: "todo".into(),
+                        branch: "trunk".into(),
+                        status: t.status.label().into(),
+                        from: None,
+                        source_turns: t.source_turns.clone(),
+                    },
+                    0,
+                )
+            })
+            .collect()
+    } else {
+        navigation_rows(s.summary, &s.focus, s.graph)
+    };
     let selected = s.selection.min(rows.len().saturating_sub(1));
     let entries: Vec<ListItem> = rows
         .iter()
@@ -270,9 +297,30 @@ fn draw_navigation(f: &mut Frame, s: &ViewState, area: Rect) {
                 .as_deref()
                 .map(|p| format!("From item: {p}\n\n"))
                 .unwrap_or_default();
-            format!("{parent}{source}")
+            let note = if s.todo_mode {
+                s.todos
+                    .get(selected)
+                    .map(|t| {
+                        format!(
+                            "{} · set by {}\n{}\n\n",
+                            t.status.label().replace('_', " "),
+                            t.status_by,
+                            t.note
+                        )
+                    })
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            format!("{note}{parent}{source}")
         })
-        .unwrap_or_else(|| "No summary items yet.".into());
+        .unwrap_or_else(|| {
+            if s.todo_mode {
+                "Press a to add your first reminder.".into()
+            } else {
+                "No summary items yet.".into()
+            }
+        });
     f.render_widget(
         Paragraph::new(text)
             .wrap(Wrap { trim: false })
@@ -356,6 +404,19 @@ fn panel_lines(s: &ViewState, inner_w: usize) -> Vec<Line<'static>> {
             Span::styled(mark, if dim { Style::default().fg(DIM) } else { style }),
             Span::styled(tag, Style::default().fg(DIM)),
             Span::styled(item.text.clone(), text_style),
+        ]));
+    }
+    lines.push(Line::raw(""));
+
+    section(&mut lines, "MY TODOS · a add · t manage");
+    if s.todos.is_empty() {
+        lines.push(Line::styled("–", Style::default().fg(DIM)));
+    }
+    for item in s.todos {
+        let (mark, style) = plan_glyph(item.status.label());
+        lines.push(Line::from(vec![
+            Span::styled(mark, style),
+            Span::raw(item.text.clone()),
         ]));
     }
     lines.push(Line::raw(""));
@@ -729,7 +790,17 @@ fn rail_lines(s: &ViewState, inner_w: usize) -> Vec<Line<'static>> {
     lines
 }
 
-fn footer(s: &ViewState) -> Paragraph<'static> {
+fn footer(s: &ViewState, width: u16) -> Paragraph<'static> {
+    if let Some(input) = s.todo_input {
+        let line = Line::raw(format!(" Add todo (Enter save / Esc cancel): {input}▏"));
+        let offset = line
+            .width()
+            .saturating_sub(width as usize)
+            .min(u16::MAX as usize) as u16;
+        return Paragraph::new(line)
+            .scroll((0, offset))
+            .style(Style::default().fg(Color::Black).bg(ACCENT));
+    }
     let age = crate::summary::now_secs().saturating_sub(s.updated_at);
     let age_txt = if s.updated_at == 0 {
         "never".to_string()
@@ -801,7 +872,7 @@ mod tests {
         ));
         let mut summary: Summary = serde_json::from_value(serde_json::json!({"topline":"Verify retries", "plan":[{"id":"p1","text":"Run the test","status":"done","source_turns":[0]}]})).unwrap();
         summary.normalize();
-        let state = ViewState {
+        let mut state = ViewState {
             free: &tr.free,
             summary: &summary,
             agent_status: None,
@@ -819,6 +890,9 @@ mod tests {
             graph: false,
             selection: 0,
             transcript: &tr,
+            todos: &[],
+            todo_mode: false,
+            todo_input: None,
         };
         for (width, height) in [(64, 28), (120, 40), (20, 8), (1, 1)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -834,6 +908,30 @@ mod tests {
                 assert!(text.contains("The retry test passed."));
                 assert_eq!(selection_at(width, height, false, 0, 2, 4), Some(0));
                 assert_eq!(selection_at(width, height, false, 0, 2, 20), None);
+            }
+        }
+        let mut store = crate::todos::Store::default();
+        store
+            .add("Ask about café rollout", 0, tr.fingerprint(0))
+            .unwrap();
+        state.todos = &store.items;
+        state.todo_mode = true;
+        state.todo_input = Some("A long reminder that should keep its ending visible while typing");
+        for (width, height) in [(64, 28), (20, 8), (1, 1)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|f| draw(f, &state)).unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>();
+            if width > 1 {
+                assert!(text.contains('▏'), "width {width}: {text}");
+            }
+            if width == 64 {
+                assert!(text.contains("Ask about café rollout"));
             }
         }
     }
@@ -904,6 +1002,9 @@ mod tests {
             graph: false,
             selection: 0,
             transcript: &tr,
+            todos: &[],
+            todo_mode: false,
+            todo_input: None,
         };
         let all = visible(&summary.plan, &mk(Focus::All));
         assert_eq!(all.len(), 2);

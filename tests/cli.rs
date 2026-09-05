@@ -53,6 +53,13 @@ fn long_session_summary_and_html_export_keep_early_evidence() {
     let bin = dir.path().join("bin");
     std::fs::create_dir_all(config.join("projects/test")).unwrap();
     std::fs::create_dir_all(&bin).unwrap();
+    let added = Command::new(env!("CARGO_BIN_EXE_glance-panel"))
+        .env("GLANCE_HOME", &state)
+        .env("CLAUDE_CONFIG_DIR", &config)
+        .args(["todo", "Keep the first evidence", "--session", "session"])
+        .output()
+        .unwrap();
+    assert!(added.status.success());
     let transcript = (0..40).map(|n| serde_json::json!({"type":"user","message":{"content":format!("Evidence {n}: {}", "x".repeat(2100))}}).to_string()+"\n").collect::<String>();
     std::fs::write(config.join("projects/test/session.jsonl"), transcript).unwrap();
     let stub = bin.join("claude");
@@ -63,7 +70,7 @@ fn long_session_summary_and_html_export_keep_early_evidence() {
     .unwrap();
     std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
     let fixture = dir.path().join("response.json");
-    std::fs::write(&fixture, serde_json::json!({"structured_output":{"topline":"Review evidence", "plan":[{"id":"p1","text":"Inspect first turn","status":"done","source_turns":[0]}]},"total_cost_usd":0.01}).to_string()).unwrap();
+    std::fs::write(&fixture, serde_json::json!({"structured_output":{"topline":"Review evidence", "plan":[{"id":"p1","text":"Inspect first turn","status":"done","source_turns":[0]}], "todo_updates":[{"id":"todo-1","status":"done","note":"First turn retained","source_turns":[0]}]},"total_cost_usd":0.01}).to_string()).unwrap();
     let capture = dir.path().join("input.txt");
     let mut command = Command::new(env!("CARGO_BIN_EXE_glance-panel"));
     command
@@ -90,6 +97,11 @@ fn long_session_summary_and_html_export_keep_early_evidence() {
         serde_json::from_slice(&std::fs::read(state.join("session.json")).unwrap()).unwrap();
     assert_eq!(cache["turns_done"], 40);
     assert_eq!(cache["summary"]["usage"]["calls"], 2);
+    let todos: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(state.join("session.todos.json")).unwrap()).unwrap();
+    assert_eq!(todos["items"][0]["status"], "done");
+    assert_eq!(todos["items"][0]["text"], "Keep the first evidence");
+    assert_eq!(todos["items"][0]["source_turns"], serde_json::json!([0]));
     let input = std::fs::read_to_string(capture).unwrap();
     assert!(input.contains("[t0] USER:"));
     assert!(input.contains("[t39] USER:"));
