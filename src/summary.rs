@@ -147,6 +147,13 @@ pub fn state_dir() -> Result<PathBuf> {
 }
 
 pub fn cache_path(session_id: &str) -> Result<PathBuf> {
+    if session_id.is_empty()
+        || !session_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        bail!("invalid session id");
+    }
     Ok(state_dir()?.join(format!("{session_id}.json")))
 }
 
@@ -158,9 +165,7 @@ pub fn load_cache(session_id: &str) -> Option<Cache> {
 
 pub fn save_cache(session_id: &str, cache: &Cache) -> Result<()> {
     let path = cache_path(session_id)?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(cache)?)?;
-    std::fs::rename(tmp, path)?;
+    crate::setup::atomic_write(&path, serde_json::to_string_pretty(cache)?.as_bytes())?;
     Ok(())
 }
 

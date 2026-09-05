@@ -101,12 +101,17 @@ fn main() -> Result<()> {
 fn hook_main() -> Result<()> {
     let mut input = String::new();
     let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut input);
-    let decision = if input.contains("\"agent_id\"") {
+    let hook_input: serde_json::Value = serde_json::from_str(&input).unwrap_or_default();
+    let decision = if hook_input
+        .get("agent_id")
+        .and_then(serde_json::Value::as_str)
+        .is_some()
+    {
         "skip: subagent".to_string()
     } else if std::env::var("HERDR_PANE_ID").is_err() {
         "skip: not in herdr".to_string()
-    } else if let Some(cmd) = print_mode_ancestor() {
-        format!("skip: print mode ({cmd})")
+    } else if print_mode_ancestor().is_some() {
+        "skip: print mode".to_string()
     } else {
         match attach(0.3, false) {
             Ok(()) => "attach: ok".to_string(),
@@ -164,11 +169,18 @@ fn print_mode_ancestor() -> Option<String> {
 }
 
 fn attach(ratio: f64, force: bool) -> Result<()> {
+    if !ratio.is_finite() || ratio <= 0.0 || ratio >= 1.0 {
+        bail!("ratio must be greater than 0 and less than 1");
+    }
     let pane = std::env::var("HERDR_PANE_ID")
         .context("HERDR_PANE_ID not set; run this inside a herdr pane")?;
     let client = herdr::Client::from_env().ok_or_else(|| anyhow!("herdr socket not found"))?;
     let exe = std::env::current_exe()?.to_string_lossy().to_string();
-    let command = format!("{exe} --pane {pane}");
+    let command = format!(
+        "{} --pane {}",
+        shell_words::quote(&exe),
+        shell_words::quote(&pane)
+    );
     let others: Vec<String> = client
         .tab_panes(&pane)?
         .into_iter()
@@ -234,7 +246,13 @@ fn start_in_pane(client: &herdr::Client, pane: &str, command: &str) -> Result<()
         }
         thread::sleep(Duration::from_millis(250));
     }
+    if !is_idle_shell(&client.foreground_names(pane).unwrap_or_default()) {
+        bail!("pane {pane} did not become an idle shell");
+    }
     for _ in 0..2 {
+        if !is_idle_shell(&client.foreground_names(pane).unwrap_or_default()) {
+            bail!("pane {pane} is no longer an idle shell");
+        }
         herdr::run_in_pane(pane, command)?;
         let up_by = Instant::now() + Duration::from_secs(5);
         while Instant::now() < up_by {
