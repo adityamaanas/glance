@@ -1,10 +1,9 @@
 //! Minimal client for the herdr socket API (newline-delimited JSON over a Unix socket).
 
+use crate::transport::Connection;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc::Sender;
@@ -35,18 +34,23 @@ impl Client {
                 path: PathBuf::from(p),
             });
         }
-        let default = dirs::home_dir()?.join(".config/herdr/herdr.sock");
-        default.exists().then_some(Client { path: default })
+        #[cfg(unix)]
+        {
+            let default = dirs::home_dir()?.join(".config/herdr/herdr.sock");
+            default.exists().then_some(Client { path: default })
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
     }
 
     pub fn call(&self, method: &str, params: Value) -> Result<Value> {
-        let mut stream = UnixStream::connect(&self.path)
+        let mut stream = Connection::connect(&self.path)
             .with_context(|| format!("connect to herdr socket {}", self.path.display()))?;
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
         let req = json!({ "id": format!("glance:{}", method), "method": method, "params": params });
-        stream.write_all(format!("{}\n", req).as_bytes())?;
-        let mut line = String::new();
-        BufReader::new(&stream).read_line(&mut line)?;
+        stream.send(format!("{}\n", req).as_bytes())?;
+        let line = stream.line(Duration::from_secs(5))?;
         let resp: Value = serde_json::from_str(line.trim()).context("parse herdr response")?;
         if let Some(err) = resp.get("error") {
             bail!(
@@ -102,7 +106,7 @@ impl Client {
     pub fn watch_status(&self, pane_id: String, tx: Sender<String>) {
         let path = self.path.clone();
         thread::spawn(move || loop {
-            if let Ok(mut stream) = UnixStream::connect(&path) {
+            if let Ok(mut stream) = Connection::connect(&path) {
                 let req = json!({
                     "id": "glance:events",
                     "method": "events.subscribe",
@@ -110,15 +114,14 @@ impl Client {
                         { "type": "pane.agent_status_changed", "pane_id": pane_id }
                     ]}
                 });
-                if stream.write_all(format!("{}\n", req).as_bytes()).is_ok() {
+                if stream.send(format!("{}\n", req).as_bytes()).is_ok() {
                     // Refresh state after disconnects, even if no new event follows.
                     if let Ok(info) = (Client { path: path.clone() }).agent_get(&pane_id) {
                         if tx.send(info.agent_status).is_err() {
                             return;
                         }
                     }
-                    let reader = BufReader::new(stream);
-                    for line in reader.lines().map_while(Result::ok) {
+                    while let Ok(line) = stream.line(Duration::from_secs(60)) {
                         let Ok(v) = serde_json::from_str::<Value>(&line) else {
                             continue;
                         };
@@ -188,9 +191,10 @@ pub fn run_in_pane(pane_id: &str, command: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader, Write};
     #[test]
     fn subscription_refreshes_current_state_without_an_event() {
         use std::os::unix::net::UnixListener;

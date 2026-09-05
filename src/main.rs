@@ -4,6 +4,7 @@ mod herdr;
 mod setup;
 mod summary;
 mod transcript;
+mod transport;
 mod view;
 
 use anyhow::{anyhow, bail, Context, Result};

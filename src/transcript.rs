@@ -506,7 +506,7 @@ mod tests {
     #[test]
     fn expected_path_slugs_every_non_alphanumeric() {
         let p = expected_path("/Users/me/Documents/my_project", "abc").unwrap();
-        let s = p.to_string_lossy();
+        let s = p.to_string_lossy().replace('\\', "/");
         assert!(
             s.ends_with("/.claude/projects/-Users-me-Documents-my-project/abc.jsonl"),
             "{s}"
