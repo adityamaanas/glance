@@ -281,13 +281,29 @@ pub fn summarize(prev: &Summary, new_turns: &str, title: Option<&str>) -> Result
 
 /// Drain both pipes while the child runs, including while it consumes stdin.
 fn run_process(cmd: &mut Command, input: Vec<u8>, timeout: Duration) -> Result<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     let mut child = cmd.spawn().context("spawn summary process")?;
+    #[cfg(unix)]
+    let _group = ProcessGroup(child.id());
     let mut stdin = child.stdin.take().context("summary stdin not piped")?;
     let stdout = child.stdout.take().context("summary stdout not piped")?;
     let stderr = child.stderr.take().context("summary stderr not piped")?;
-    let writer = std::thread::spawn(move || stdin.write_all(&input));
-    let out = std::thread::spawn(move || read_output(stdout));
-    let err = std::thread::spawn(move || read_output(stderr));
+    let (input_tx, input_rx) = std::sync::mpsc::channel();
+    let (out_tx, out_rx) = std::sync::mpsc::channel();
+    let (err_tx, err_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = input_tx.send(stdin.write_all(&input));
+    });
+    std::thread::spawn(move || {
+        let _ = out_tx.send(read_output(stdout));
+    });
+    std::thread::spawn(move || {
+        let _ = err_tx.send(read_output(stderr));
+    });
     let start = Instant::now();
     let status = loop {
         if let Some(s) = child.try_wait()? {
@@ -300,12 +316,12 @@ fn run_process(cmd: &mut Command, input: Vec<u8>, timeout: Duration) -> Result<S
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    let stdout = out
-        .join()
-        .map_err(|_| anyhow!("stdout reader panicked"))??;
-    let stderr = err
-        .join()
-        .map_err(|_| anyhow!("stderr reader panicked"))??;
+    let stdout = out_rx
+        .recv_timeout(timeout.saturating_sub(start.elapsed()))
+        .context("summary stdout did not close before timeout")??;
+    let stderr = err_rx
+        .recv_timeout(timeout.saturating_sub(start.elapsed()))
+        .context("summary stderr did not close before timeout")??;
     if !status.success() {
         bail!(
             "summary process exited {}: {}",
@@ -313,10 +329,23 @@ fn run_process(cmd: &mut Command, input: Vec<u8>, timeout: Duration) -> Result<S
             clip(stderr.trim(), 300)
         );
     }
-    writer
-        .join()
-        .map_err(|_| anyhow!("stdin writer panicked"))??;
+    input_rx
+        .recv_timeout(timeout.saturating_sub(start.elapsed()))
+        .context("summary stdin did not close before timeout")??;
     Ok(stdout)
+}
+
+#[cfg(unix)]
+struct ProcessGroup(u32);
+
+#[cfg(unix)]
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        // This group belongs to our child; clean up inherited pipe holders too.
+        unsafe {
+            libc::kill(-(self.0 as i32), libc::SIGKILL);
+        }
+    }
 }
 
 fn read_output(mut pipe: impl Read) -> std::io::Result<String> {
@@ -368,6 +397,19 @@ pub fn pending_text(tr: &Transcript, turns_done: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn inherited_pipes_cannot_outlive_the_deadline() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 10 & exit 0"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let start = Instant::now();
+        assert!(run_process(&mut cmd, Vec::new(), Duration::from_millis(80)).is_err());
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
 
     #[test]
     fn structured_output_takes_precedence_over_text_result() {

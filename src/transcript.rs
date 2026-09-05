@@ -42,6 +42,7 @@ pub struct Transcript {
 /// Where Claude Code will write a session's transcript for a given working directory
 /// (the project slug replaces every non-alphanumeric character with '-').
 pub fn expected_path(cwd: &str, session_id: &str) -> Result<PathBuf> {
+    validate_session_id(session_id)?;
     let slug: String = cwd
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
@@ -55,6 +56,7 @@ pub fn expected_path(cwd: &str, session_id: &str) -> Result<PathBuf> {
 
 /// Locate a session's transcript under any project directory.
 pub fn find_transcript(session_id: &str) -> Result<PathBuf> {
+    validate_session_id(session_id)?;
     let projects = dirs::home_dir()
         .ok_or_else(|| anyhow!("no home dir"))?
         .join(".claude/projects");
@@ -69,6 +71,19 @@ pub fn find_transcript(session_id: &str) -> Result<PathBuf> {
         }
     }
     Err(anyhow!("no transcript found for session {session_id}"))
+}
+
+pub fn validate_session_id(session_id: &str) -> Result<()> {
+    if session_id.is_empty()
+        || !session_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err(anyhow!(
+            "invalid session id: use letters, numbers, hyphens, or underscores"
+        ));
+    }
+    Ok(())
 }
 
 impl Transcript {
