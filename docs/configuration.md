@@ -1,5 +1,7 @@
 # Configuration and platform support
 
+Building from source requires Rust 1.88 or later, matching the locked dependency requirements. CI checks that minimum as well as current stable Rust.
+
 Glance reads `~/.glance/config.json`. Invalid configuration is reported on normal startup; the nonblocking hook entry point still exits successfully. Unknown configuration keys survive hook preference updates.
 
 ```json
