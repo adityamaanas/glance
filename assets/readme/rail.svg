@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="420" viewBox="0 0 960 420" role="img" aria-labelledby="title desc">
+  <title id="title">One session. Several threads.</title>
+  <desc id="desc">Fictional rail illustration with a trunk for release preparation and branches for retries and documentation, showing steps, questions, and decisions.</desc>
+  <rect width="960" height="420" rx="16" fill="#0c1e26"/>
+  <g font-family="Consolas, Menlo, monospace">
+    <text x="36" y="46" fill="#edf4f0" font-size="20">One session. Several threads.</text>
+    <text x="36" y="80" fill="#8eacb4" font-size="13">⌂ trunk     ● retries     ● docs</text>
+    <text x="785" y="46" fill="#83a4ad" font-size="11">ILLUSTRATION</text>
+    <path d="M36 103H924" stroke="#304952"/>
+    <g font-size="16" xml:space="preserve">
+      <text x="42" y="143" fill="#d4e1e1">●     Prepare the release</text>
+      <text x="42" y="180" fill="#76d8cc">├─✓   Reproduce the retry bug</text>
+      <text x="42" y="217" fill="#76d8cc">│ ●   Keep one idempotency key</text>
+      <text x="42" y="254" fill="#edb58c">├─┼─▶ Refresh the quick start</text>
+      <text x="42" y="291" fill="#e1cfeb">│ ? │ Backport the retry fix?</text>
+      <text x="42" y="328" fill="#76d8cc">│ │ ✓ Check installation commands</text>
+    </g>
+    <path d="M36 358H924" stroke="#304952"/>
+    <text x="36" y="391" fill="#8eacb4" font-size="13">Summary items, arranged by transcript turn. Press v to return to the panel.</text>
+  </g>
+</svg>
