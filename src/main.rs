@@ -74,7 +74,7 @@ enum Msg {
     Status(String),
     Key(KeyCode, KeyModifiers),
     Tick,
-    Summary(Result<Summary>, usize),
+    Summary(Result<Summary>, usize, u64),
 }
 
 fn main() -> Result<()> {
@@ -276,6 +276,7 @@ struct App {
     cache: Cache,
     agent_status: Option<String>,
     analyzing: bool,
+    generation: u64,
     dirty: bool,
     last_growth: Option<Instant>,
     error: Option<String>,
@@ -290,6 +291,35 @@ struct App {
 }
 
 impl App {
+    fn finish_summary(
+        &mut self,
+        result: Result<Summary>,
+        turns_done: usize,
+        generation: u64,
+    ) -> bool {
+        if self.generation != generation {
+            return false;
+        }
+        self.analyzing = false;
+        match result {
+            Ok(summary) => {
+                self.cache = Cache {
+                    version: summary::CACHE_VERSION,
+                    summary,
+                    turns_done,
+                    updated_at: summary::now_secs(),
+                    source: summary::model(),
+                };
+                self.error = None;
+                true
+            }
+            Err(e) => {
+                self.error = Some(e.to_string());
+                false
+            }
+        }
+    }
+
     fn focus(&self) -> Focus {
         if !self.cache.summary.is_multi() {
             return Focus::All;
@@ -381,6 +411,7 @@ fn run(cli: Cli) -> Result<()> {
         cache,
         agent_status,
         analyzing: false,
+        generation: 0,
         dirty: true,
         last_growth: Some(Instant::now() - Duration::from_secs(10)),
         error: None,
@@ -569,23 +600,11 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
                 _ => {}
             },
             Msg::Tick => {}
-            Msg::Summary(result, turns_done) => {
-                app.analyzing = false;
-                match result {
-                    Ok(s) => {
-                        app.cache = Cache {
-                            version: summary::CACHE_VERSION,
-                            summary: s,
-                            turns_done,
-                            updated_at: summary::now_secs(),
-                            source: summary::model(),
-                        };
-                        app.error = None;
-                        if let Err(e) = summary::save_cache(&app.session_id, &app.cache) {
-                            app.error = Some(e.to_string());
-                        }
+            Msg::Summary(result, turns_done, generation) => {
+                if app.finish_summary(result, turns_done, generation) {
+                    if let Err(e) = summary::save_cache(&app.session_id, &app.cache) {
+                        app.error = Some(e.to_string());
                     }
-                    Err(e) => app.error = Some(e.to_string()),
                 }
             }
         }
@@ -608,7 +627,12 @@ fn follow_session_change(app: &mut App) {
     if sid == app.session_id {
         return;
     }
-    let Ok(path) = transcript::find_transcript(&sid) else {
+    let Ok(path) = transcript::find_transcript(&sid).or_else(|e| {
+        info.cwd
+            .as_deref()
+            .map(|cwd| transcript::expected_path(cwd, &sid))
+            .unwrap_or(Err(e))
+    }) else {
         return;
     };
     let mut tr = Transcript::open(&path);
@@ -627,6 +651,10 @@ fn follow_session_change(app: &mut App) {
     }
     app.tr = tr;
     app.session_id = sid;
+    app.generation = app.generation.wrapping_add(1);
+    app.analyzing = false;
+    app.pinned = false;
+    app.focus_override = None;
     app.dirty = true;
     app.scroll = 0;
     app.error = None;
@@ -661,12 +689,13 @@ fn maybe_summarize(app: &mut App) {
         .clone()
         .or_else(|| app.tr.free.title.clone());
     let turns_done = app.tr.turns.len();
+    let generation = app.generation;
     let tx = app.tx.clone();
     app.analyzing = true;
     app.dirty = false;
     thread::spawn(move || {
         let result = summary::summarize(&prev, &text, title.as_deref());
-        let _ = tx.send(Msg::Summary(result, turns_done));
+        let _ = tx.send(Msg::Summary(result, turns_done, generation));
     });
 }
 
@@ -688,4 +717,52 @@ fn draw(app: &App, terminal: &mut Term) -> Result<()> {
     };
     terminal.draw(|f| view::draw(f, &state))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_session_switch_rejects_old_results_without_releasing_new_worker() {
+        let (tx, _) = mpsc::channel();
+        let path = std::path::PathBuf::from("unused.jsonl");
+        let mut app = App {
+            session_id: "new-session".into(),
+            client: None,
+            pane: None,
+            watched_path: Arc::new(Mutex::new(path.clone())),
+            tr: Transcript::open(&path),
+            cache: Cache::default(),
+            agent_status: None,
+            analyzing: true,
+            generation: 2,
+            dirty: false,
+            last_growth: None,
+            error: None,
+            scroll: 0,
+            no_model: true,
+            offer: false,
+            focus_override: None,
+            pinned: false,
+            rail: false,
+            tx,
+        };
+        let old = Summary {
+            topline: "old session".into(),
+            ..Summary::default()
+        };
+        assert!(!app.finish_summary(Ok(old), 900, 1));
+        assert_eq!(app.cache.turns_done, 0);
+        assert!(app.cache.summary.topline.is_empty());
+        assert!(app.analyzing);
+        let new = Summary {
+            topline: "new session".into(),
+            ..Summary::default()
+        };
+        assert!(app.finish_summary(Ok(new), 3, 2));
+        assert_eq!(app.cache.turns_done, 3);
+        assert_eq!(app.cache.summary.topline, "new session");
+        assert!(!app.analyzing);
+    }
 }
