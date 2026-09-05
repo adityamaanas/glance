@@ -21,7 +21,7 @@ pub fn model() -> String {
 const TIMEOUT: Duration = Duration::from_secs(150);
 const MAX_NEW_CHARS: usize = 60_000;
 
-pub const CACHE_VERSION: u32 = 2;
+pub const CACHE_VERSION: u32 = 3;
 
 fn trunk() -> String {
     "trunk".to_string()
@@ -127,6 +127,8 @@ pub struct Cache {
     pub version: u32,
     pub summary: Summary,
     pub turns_done: usize,
+    #[serde(default)]
+    pub fingerprint: u64,
     pub updated_at: u64,
     pub source: String,
 }

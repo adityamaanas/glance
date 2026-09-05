@@ -278,6 +278,7 @@ fn summarize_once(session: &str) -> Result<()> {
         version: summary::CACHE_VERSION,
         summary: s,
         turns_done: tr.turns.len(),
+        fingerprint: tr.fingerprint(tr.turns.len()),
         updated_at: summary::now_secs(),
         source: summary::model(),
     };
@@ -325,6 +326,7 @@ impl App {
                     version: summary::CACHE_VERSION,
                     summary,
                     turns_done,
+                    fingerprint: self.tr.fingerprint(turns_done),
                     updated_at: summary::now_secs(),
                     source: summary::model(),
                 };
@@ -411,13 +413,16 @@ fn run(cli: Cli) -> Result<()> {
     };
     let mut tr = Transcript::open(&path);
     tr.read_new()?;
-    let cache = summary::load_cache(&session_id).unwrap_or_else(|| Cache {
-        version: summary::CACHE_VERSION,
-        summary: summary::heuristic(&tr),
-        turns_done: 0,
-        updated_at: 0,
-        source: "heuristic".into(),
-    });
+    let cache = summary::load_cache(&session_id)
+        .filter(|c| c.turns_done <= tr.turns.len() && c.fingerprint == tr.fingerprint(c.turns_done))
+        .unwrap_or_else(|| Cache {
+            version: summary::CACHE_VERSION,
+            summary: summary::heuristic(&tr),
+            turns_done: 0,
+            fingerprint: 0,
+            updated_at: 0,
+            source: "heuristic".into(),
+        });
 
     let watched_path = Arc::new(Mutex::new(tr.path.clone()));
     let mut app = App {
@@ -497,13 +502,15 @@ fn wait_for_session(client: &herdr::Client, pane: &str) -> Result<herdr::AgentIn
 
 fn spawn_poller(path: Arc<Mutex<std::path::PathBuf>>, tx: Sender<Msg>) {
     thread::spawn(move || {
-        let mut last_len = 0u64;
+        let mut last = None;
         loop {
             thread::sleep(Duration::from_millis(700));
             let p = path.lock().map(|g| g.clone()).unwrap_or_default();
-            let len = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(last_len);
-            if len != last_len {
-                last_len = len;
+            let signature = std::fs::metadata(&p)
+                .ok()
+                .map(|m| (p, m.len(), m.modified().ok()));
+            if signature != last {
+                last = signature;
                 if tx.send(Msg::Grew).is_err() {
                     return;
                 }
@@ -558,8 +565,20 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
         let msg = rx.recv_timeout(Duration::from_secs(1)).unwrap_or(Msg::Tick);
         match msg {
             Msg::Grew => {
+                let revision = app.tr.revision;
                 if let Err(e) = app.tr.read_new() {
                     app.error = Some(e.to_string());
+                }
+                if revision != app.tr.revision {
+                    app.generation = app.generation.wrapping_add(1);
+                    app.analyzing = false;
+                    app.cache = Cache {
+                        summary: summary::heuristic(&app.tr),
+                        ..Cache::default()
+                    };
+                }
+                if app.cache.updated_at == 0 {
+                    app.cache.summary = summary::heuristic(&app.tr);
                 }
                 app.dirty = true;
                 app.last_growth = Some(Instant::now());
@@ -657,13 +676,16 @@ fn follow_session_change(app: &mut App) {
     if tr.read_new().is_err() {
         return;
     }
-    app.cache = summary::load_cache(&sid).unwrap_or_else(|| Cache {
-        version: summary::CACHE_VERSION,
-        summary: summary::heuristic(&tr),
-        turns_done: 0,
-        updated_at: 0,
-        source: "heuristic".into(),
-    });
+    app.cache = summary::load_cache(&sid)
+        .filter(|c| c.turns_done <= tr.turns.len() && c.fingerprint == tr.fingerprint(c.turns_done))
+        .unwrap_or_else(|| Cache {
+            version: summary::CACHE_VERSION,
+            summary: summary::heuristic(&tr),
+            turns_done: 0,
+            fingerprint: 0,
+            updated_at: 0,
+            source: "heuristic".into(),
+        });
     if let Ok(mut guard) = app.watched_path.lock() {
         *guard = path;
     }
