@@ -47,9 +47,8 @@ pub fn expected_path(cwd: &str, session_id: &str) -> Result<PathBuf> {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
-    Ok(dirs::home_dir()
-        .ok_or_else(|| anyhow!("no home dir"))?
-        .join(".claude/projects")
+    Ok(claude_dir()?
+        .join("projects")
         .join(slug)
         .join(format!("{session_id}.jsonl")))
 }
@@ -57,9 +56,7 @@ pub fn expected_path(cwd: &str, session_id: &str) -> Result<PathBuf> {
 /// Locate a session's transcript under any project directory.
 pub fn find_transcript(session_id: &str) -> Result<PathBuf> {
     validate_session_id(session_id)?;
-    let projects = dirs::home_dir()
-        .ok_or_else(|| anyhow!("no home dir"))?
-        .join(".claude/projects");
+    let projects = claude_dir()?.join("projects");
     let name = format!("{session_id}.jsonl");
     for entry in std::fs::read_dir(&projects)
         .context("read ~/.claude/projects")?
@@ -71,6 +68,15 @@ pub fn find_transcript(session_id: &str) -> Result<PathBuf> {
         }
     }
     Err(anyhow!("no transcript found for session {session_id}"))
+}
+
+pub fn claude_dir() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("CLAUDE_CONFIG_DIR") {
+        return Ok(PathBuf::from(path));
+    }
+    Ok(dirs::home_dir()
+        .ok_or_else(|| anyhow!("no home dir"))?
+        .join(".claude"))
 }
 
 pub fn validate_session_id(session_id: &str) -> Result<()> {
@@ -265,27 +271,32 @@ impl Transcript {
         }
     }
 
-    /// Render turns `from..` as compact text for the model.
-    pub fn render(&self, from: usize, max_chars: usize) -> String {
+    /// Render a forward chunk and return the exclusive cursor actually included.
+    pub fn render_chunk(&self, from: usize, max_bytes: usize) -> (String, usize) {
         let mut out = String::new();
+        let mut end = from.min(self.turns.len());
+        let budget = max_bytes.max(64);
         for (i, t) in self.turns.iter().enumerate().skip(from) {
-            match t {
-                Turn::User(s) => out.push_str(&format!("[t{i}] USER: {}\n\n", clip(s, 2000))),
-                Turn::Assistant(s) => {
-                    out.push_str(&format!("[t{i}] CLAUDE: {}\n\n", clip(s, 2000)))
+            let mut line = match t {
+                Turn::User(s) => format!("[t{i}] USER: {}\n\n", clip(s, 2000)),
+                Turn::Assistant(s) => format!("[t{i}] CLAUDE: {}\n\n", clip(s, 2000)),
+                Turn::Tool(s) => format!("[t{i}] TOOL: {}\n", clip(s, 1500)),
+            };
+            if !out.is_empty() && out.len() + line.len() > budget {
+                break;
+            }
+            if line.len() > budget {
+                let mut cut = budget - 16;
+                while !line.is_char_boundary(cut) {
+                    cut -= 1;
                 }
-                Turn::Tool(s) => out.push_str(&format!("[t{i}] TOOL: {}\n", clip(s, 1500))),
+                line.truncate(cut);
+                line.push_str(" [clipped]\n");
             }
+            out.push_str(&line);
+            end = i + 1;
         }
-        if out.len() > max_chars {
-            let cut = out.len() - max_chars;
-            let mut start = cut;
-            while !out.is_char_boundary(start) {
-                start += 1;
-            }
-            out = format!("(earlier turns omitted)\n\n{}", &out[start..]);
-        }
-        out
+        (out, end)
     }
 
     pub fn first_user(&self) -> Option<&str> {
@@ -410,7 +421,8 @@ mod tests {
             r#"{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"content":"test failed: duplicate charge"}]}}"#,
         ]);
         assert!(tr
-            .render(0, 10000)
+            .render_chunk(0, 10000)
+            .0
             .contains("[t0] TOOL: error: test failed: duplicate charge"));
     }
 
@@ -466,20 +478,26 @@ mod tests {
             r#"{"type":"assistant","message":{"content":[{"type":"text","text":"two"}]}}"#,
             r#"{"type":"user","message":{"role":"user","content":"three"}}"#,
         ]);
-        let out = tr.render(1, 10_000);
+        let (out, end) = tr.render_chunk(1, 10_000);
+        assert_eq!(end, 3);
         assert!(out.starts_with("[t1] CLAUDE: two"));
         assert!(out.contains("[t2] USER: three"));
         assert!(!out.contains("[t0]"));
     }
 
     #[test]
-    fn render_caps_length_and_marks_omission() {
+    fn render_chunks_advance_without_omitting_early_turns() {
         let long = "x".repeat(500);
         let line = format!(r#"{{"type":"user","message":{{"role":"user","content":"{long}"}}}}"#);
         let tr = tr_with(&[&line, &line, &line]);
-        let out = tr.render(0, 700);
-        assert!(out.starts_with("(earlier turns omitted)"));
-        assert!(out.len() < 800);
+        let mut from = 0;
+        while from < tr.turns.len() {
+            let (out, end) = tr.render_chunk(from, 700);
+            assert!(out.starts_with(&format!("[t{from}] USER:")));
+            assert!(out.len() <= 700);
+            assert_eq!(end, from + 1);
+            from = end;
+        }
     }
 
     #[test]

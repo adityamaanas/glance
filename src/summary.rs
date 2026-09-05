@@ -13,10 +13,31 @@ pub const DEFAULT_MODEL: &str = "claude-sonnet-5";
 
 /// Model for the summary pass: `GLANCE_MODEL` if set, else the default.
 pub fn model() -> String {
-    std::env::var("GLANCE_MODEL")
-        .ok()
-        .filter(|m| !m.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_MODEL.to_string())
+    OPTIONS
+        .get()
+        .map(|o| o.0.clone())
+        .unwrap_or_else(|| resolve_model(None, std::env::var("GLANCE_MODEL").ok().as_deref(), None))
+}
+
+static OPTIONS: std::sync::OnceLock<(String, Option<String>)> = std::sync::OnceLock::new();
+
+fn resolve_model(cli: Option<&str>, env: Option<&str>, config: Option<&str>) -> String {
+    [cli, env, config]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|s| !s.is_empty())
+        .unwrap_or(DEFAULT_MODEL)
+        .to_string()
+}
+
+pub fn configure(cli: Option<&str>, config: &crate::setup::Config) {
+    let model = resolve_model(
+        cli,
+        std::env::var("GLANCE_MODEL").ok().as_deref(),
+        config.model.as_deref(),
+    );
+    let _ = OPTIONS.set((model, config.prompt.clone()));
 }
 const TIMEOUT: Duration = Duration::from_secs(150);
 const MAX_NEW_CHARS: usize = 60_000;
@@ -75,6 +96,14 @@ pub struct Summary {
     pub decisions: Vec<Item>,
     #[serde(default)]
     pub blockers: Vec<Item>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct Usage {
+    pub calls: u64,
+    pub estimated_usd: Option<f64>,
 }
 
 impl Summary {
@@ -141,9 +170,13 @@ pub fn now_secs() -> u64 {
 }
 
 pub fn state_dir() -> Result<PathBuf> {
-    let dir = dirs::home_dir()
-        .ok_or_else(|| anyhow!("no home dir"))?
-        .join(".glance");
+    let dir = if let Some(path) = std::env::var_os("GLANCE_HOME") {
+        PathBuf::from(path)
+    } else {
+        dirs::home_dir()
+            .ok_or_else(|| anyhow!("no home dir"))?
+            .join(".glance")
+    };
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -252,7 +285,14 @@ pub fn summarize(prev: &Summary, new_turns: &str, title: Option<&str>) -> Result
     cmd.args(["-p", "--output-format", "json", "--model", &model])
         .arg("--json-schema")
         .arg(schema.to_string())
-        .args(["--append-system-prompt", SYSTEM])
+        .args([
+            "--append-system-prompt",
+            &format!(
+                "{}\n{}",
+                SYSTEM,
+                OPTIONS.get().and_then(|o| o.1.as_deref()).unwrap_or("")
+            ),
+        ])
         .args([
             "--no-session-persistence",
             "--tools",
@@ -276,11 +316,26 @@ pub fn summarize(prev: &Summary, new_turns: &str, title: Option<&str>) -> Result
         cmd.env_remove(key);
     }
     let stdout = run_process(&mut cmd, prompt.into_bytes(), TIMEOUT)?;
-    parse_response(&stdout)
+    let mut summary = parse_response(&stdout)?;
+    if let Some(usage) = &mut summary.usage {
+        usage.calls += prev.usage.as_ref().map(|u| u.calls).unwrap_or(0);
+        if let (Some(current), Some(previous)) = (
+            usage.estimated_usd,
+            prev.usage.as_ref().and_then(|u| u.estimated_usd),
+        ) {
+            usage.estimated_usd = Some(current + previous);
+        }
+    }
+    Ok(summary)
 }
 
 /// Drain both pipes while the child runs, including while it consumes stdin.
 fn run_process(cmd: &mut Command, input: Vec<u8>, timeout: Duration) -> Result<String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -386,17 +441,91 @@ fn parse_response(stdout: &str) -> Result<Summary> {
         other => serde_json::from_value(other.clone()).context("parse structured result")?,
     };
     summary.normalize();
+    summary.usage = Some(Usage {
+        calls: 1,
+        estimated_usd: envelope.get("total_cost_usd").and_then(Value::as_f64),
+    });
     Ok(summary)
 }
 
 /// Text to send for the turns not yet summarized.
-pub fn pending_text(tr: &Transcript, turns_done: usize) -> String {
-    tr.render(turns_done, MAX_NEW_CHARS)
+pub fn pending_chunk(tr: &Transcript, turns_done: usize) -> (String, usize) {
+    tr.render_chunk(turns_done, MAX_NEW_CHARS)
+}
+
+pub fn clean_cache(days: u64, dry_run: bool) -> Result<Vec<PathBuf>> {
+    clean_cache_in(
+        &state_dir()?,
+        now_secs().saturating_sub(days.saturating_mul(86400)),
+        dry_run,
+    )
+}
+
+fn clean_cache_in(dir: &std::path::Path, cutoff: u64, dry_run: bool) -> Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if matches!(id, "config" | "todos") || crate::transcript::validate_session_id(id).is_err() {
+            continue;
+        }
+        let Ok(cache) = serde_json::from_slice::<Cache>(&std::fs::read(&path)?) else {
+            continue;
+        };
+        if cache.updated_at < cutoff {
+            if !dry_run {
+                std::fs::remove_file(&path)?;
+            }
+            found.push(path);
+        }
+    }
+    Ok(found)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleanup_preserves_configuration_todos_and_recent_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = Cache {
+            updated_at: 1,
+            ..Cache::default()
+        };
+        let recent = Cache {
+            updated_at: 100,
+            ..Cache::default()
+        };
+        std::fs::write(
+            dir.path().join("old.json"),
+            serde_json::to_vec(&old).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("recent.json"),
+            serde_json::to_vec(&recent).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("config.json"), b"{}").unwrap();
+        std::fs::write(dir.path().join("old.todos.json"), b"[]").unwrap();
+        assert_eq!(clean_cache_in(dir.path(), 50, true).unwrap().len(), 1);
+        assert!(dir.path().join("old.json").exists());
+        assert_eq!(clean_cache_in(dir.path(), 50, false).unwrap().len(), 1);
+        assert!(!dir.path().join("old.json").exists());
+        assert!(dir.path().join("recent.json").exists());
+        assert!(dir.path().join("old.todos.json").exists());
+        assert!(dir.path().join("config.json").exists());
+    }
 
     #[cfg(unix)]
     #[test]
@@ -527,10 +656,9 @@ mod tests {
 
     #[test]
     fn model_override_from_env() {
-        std::env::remove_var("GLANCE_MODEL");
-        assert_eq!(model(), DEFAULT_MODEL);
-        std::env::set_var("GLANCE_MODEL", "claude-haiku-4-5-20251001");
-        assert_eq!(model(), "claude-haiku-4-5-20251001");
-        std::env::remove_var("GLANCE_MODEL");
+        assert_eq!(resolve_model(None, None, None), DEFAULT_MODEL);
+        assert_eq!(resolve_model(Some("cli"), Some("env"), Some("file")), "cli");
+        assert_eq!(resolve_model(Some(" "), Some("env"), Some("file")), "env");
+        assert_eq!(resolve_model(None, None, Some("file")), "file");
     }
 }
