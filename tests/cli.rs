@@ -1,5 +1,48 @@
 use std::process::Command;
 
+#[test]
+fn todo_cli_preserves_wording_and_requires_explicit_carry() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_glance-panel"))
+            .env("GLANCE_HOME", dir.path())
+            .env("CLAUDE_CONFIG_DIR", dir.path().join("claude"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()
+    };
+    let first = run(&["todo", "Ask about café rollout", "--session", "first"]);
+    assert_eq!(first[0]["text"], "Ask about café rollout");
+    let changed = run(&[
+        "todo",
+        "--session",
+        "first",
+        "--set",
+        "todo-1",
+        "--status",
+        "done",
+    ]);
+    assert_eq!(changed[0]["status"], "done");
+    assert_eq!(run(&["todo", "--session", "second"]), serde_json::json!([]));
+    let carried = run(&["todo", "--session", "second", "--carry-from", "first"]);
+    assert_eq!(carried[0]["text"], first[0]["text"]);
+    assert_eq!(carried[0]["status"], "pending");
+    assert_eq!(
+        run(&["todo", "--session", "first", "--delete", "todo-1"]),
+        serde_json::json!([])
+    );
+    assert_eq!(
+        run(&["todo", "--session", "second"])[0]["text"],
+        first[0]["text"]
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn long_session_summary_and_html_export_keep_early_evidence() {

@@ -100,6 +100,8 @@ pub struct Summary {
     pub decisions: Vec<Item>,
     #[serde(default)]
     pub blockers: Vec<Item>,
+    #[serde(default)]
+    pub todo_updates: Vec<crate::todos::Update>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
 }
@@ -258,7 +260,12 @@ where it arose or last changed; keep prior values unless the item changed; 0 if 
 Every text at most 90 characters. Plain words, no markdown. Never invent facts not in the transcript.";
 
 /// Run Sonnet over the new turns and return the updated summary.
-pub fn summarize(prev: &Summary, new_turns: &str, title: Option<&str>) -> Result<Summary> {
+pub fn summarize(
+    prev: &Summary,
+    new_turns: &str,
+    title: Option<&str>,
+    todos: &[crate::todos::Todo],
+) -> Result<Summary> {
     let item = json!({"type": "object", "properties": {
         "text": {"type": "string"}, "branch": {"type": "string"}, "turn": {"type": "integer"}
     }, "required": ["text", "branch", "turn"]});
@@ -294,10 +301,21 @@ pub fn summarize(prev: &Summary, new_turns: &str, title: Option<&str>) -> Result
             required.extend([json!("id"), json!("source_turns"), json!("from")]);
         }
     }
+    schema["properties"]["todo_updates"] = json!({"type":"array","items":{
+        "type":"object","properties":{
+            "id":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","done"]},
+            "note":{"type":"string"},"source_turns":{"type":"array","items":{"type":"integer","minimum":0}}
+        },"required":["id","status","note","source_turns"]
+    }});
+    schema["required"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("todo_updates"));
     let prompt = format!(
-        "Session title: {}\n\nPREVIOUS PANEL STATE:\n{}\n\nNEW TRANSCRIPT TURNS:\n{}\n\nReturn the updated panel state.",
+        "Session title: {}\n\nPREVIOUS PANEL STATE:\n{}\n\nUSER-OWNED TODOS:\n{}\n\nNEW TRANSCRIPT TURNS:\n{}\n\nReturn the updated panel state. For todos return status updates only, never add, delete, or reword items. Every update must cite new evidence at or after manual_after_turn. Do not infer completion from an intention to act. If uncertain, omit the update.",
         title.unwrap_or("(untitled)"),
         serde_json::to_string_pretty(prev)?,
+        serde_json::to_string(todos)?,
         new_turns
     );
     let mut cmd = Command::new("claude");

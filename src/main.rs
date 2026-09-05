@@ -4,6 +4,7 @@ mod evidence;
 mod herdr;
 mod setup;
 mod summary;
+mod todos;
 mod transcript;
 mod transport;
 mod view;
@@ -55,6 +56,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Manage personal reminders (defaults to this herdr pane's session).
+    Todo {
+        /// Text to append; omit to list todos.
+        text: Option<String>,
+        #[arg(long)]
+        session: Option<String>,
+        /// Todo ID whose status should change.
+        #[arg(long, requires = "status", conflicts_with_all = ["text", "delete", "carry_from"])]
+        set: Option<String>,
+        #[arg(long, value_enum, requires = "set")]
+        status: Option<todos::Status>,
+        #[arg(long, conflicts_with_all = ["text", "set", "carry_from"])]
+        delete: Option<String>,
+        /// Explicitly copy reminders from another session as pending items.
+        #[arg(long, conflicts_with_all = ["text", "set", "delete"])]
+        carry_from: Option<String>,
+    },
     /// Show cached item relationships, or export a standalone HTML graph.
     Graph {
         #[arg(long)]
@@ -102,7 +120,7 @@ enum Msg {
     Key(KeyCode, KeyModifiers),
     Tick,
     Mouse(MouseEvent),
-    Summary(Box<Result<Summary>>, usize, u64),
+    Summary(Box<Result<Summary>>, usize, u64, Vec<todos::Todo>),
 }
 
 fn main() -> Result<()> {
@@ -127,6 +145,20 @@ fn main() -> Result<()> {
         }
     }
     match cli.command {
+        Some(Cmd::Todo {
+            text,
+            session,
+            set,
+            status,
+            delete,
+            carry_from,
+        }) => todo_command(
+            session.or(cli.session),
+            text,
+            set.zip(status),
+            delete,
+            carry_from,
+        ),
         Some(Cmd::Graph {
             session,
             html,
@@ -346,7 +378,16 @@ fn summarize_once(session: &str) -> Result<()> {
             end,
             tr.turns.len()
         );
-        s = summary::summarize(&s, &text, tr.free.title.as_deref())?;
+        let todo_path = todos::path(session)?;
+        let snapshot = todos::load(&todo_path)?;
+        s = summary::summarize(&s, &text, tr.free.title.as_deref(), &snapshot.items)?;
+        if !s.todo_updates.is_empty() {
+            todos::edit(&todo_path, |store| {
+                store.apply(&snapshot.items, &s.todo_updates, &tr, end);
+                Ok(())
+            })?;
+        }
+        s.todo_updates.clear();
         evidence::normalize(&mut s, end);
         from = end;
     }
@@ -361,6 +402,71 @@ fn summarize_once(session: &str) -> Result<()> {
         source: summary::model(),
     };
     summary::save_cache(session, &cache)?;
+    Ok(())
+}
+
+fn todo_command(
+    session: Option<String>,
+    text: Option<String>,
+    set: Option<(String, todos::Status)>,
+    delete: Option<String>,
+    carry: Option<String>,
+) -> Result<()> {
+    let session = match session {
+        Some(id) => id,
+        None => {
+            let client =
+                herdr::Client::from_env().context("pass todo --session <id> outside herdr")?;
+            let pane = std::env::var("HERDR_PANE_ID").context("no herdr pane; pass --session")?;
+            client
+                .agent_get(&pane)?
+                .agent_session
+                .context("pane has no session")?
+                .value
+        }
+    };
+    let path = todos::path(&session)?;
+    let mut tr = transcript::find_transcript(&session)
+        .ok()
+        .map(|p| Transcript::open(&p));
+    if let Some(tr) = &mut tr {
+        tr.read_new()?;
+    }
+    let turns = tr.as_ref().map_or(0, |tr| tr.turns.len());
+    let fingerprint = tr.as_ref().map_or_else(
+        || Transcript::open(std::path::Path::new("unused")).fingerprint(0),
+        |tr| tr.fingerprint(turns),
+    );
+    let store = if text.is_some() || set.is_some() || delete.is_some() || carry.is_some() {
+        let source = carry
+            .map(|id| {
+                if id == session {
+                    bail!("cannot carry todos into the same session");
+                }
+                todos::load(&todos::path(&id)?)
+            })
+            .transpose()?;
+        todos::edit(&path, |s| {
+            if let Some(text) = text {
+                s.add(&text, turns, fingerprint)?;
+            }
+            if let Some((id, status)) = set {
+                s.set(&id, status, turns, fingerprint)?;
+            }
+            if let Some(id) = delete {
+                s.delete(&id)?;
+            }
+            if let Some(source) = source {
+                for item in source.items {
+                    s.add(&item.text, turns, fingerprint)?;
+                }
+            }
+            Ok(())
+        })?
+    } else {
+        todos::load(&path)?
+    };
+    println!("{}", serde_json::to_string_pretty(&store.items)?);
     Ok(())
 }
 
@@ -831,8 +937,24 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
                 _ => {}
             },
             Msg::Tick => {}
-            Msg::Summary(result, turns_done, generation) => {
+            Msg::Summary(result, turns_done, generation, snapshot) => {
+                let updates = result
+                    .as_ref()
+                    .as_ref()
+                    .map(|s| s.todo_updates.clone())
+                    .unwrap_or_default();
                 if app.finish_summary(*result, turns_done, generation) {
+                    if !updates.is_empty() {
+                        if let Err(e) = todos::path(&app.session_id).and_then(|path| {
+                            todos::edit(&path, |store| {
+                                store.apply(&snapshot, &updates, &app.tr, turns_done);
+                                Ok(())
+                            })
+                        }) {
+                            app.error = Some(e.to_string());
+                        }
+                    }
+                    app.cache.summary.todo_updates.clear();
                     if let Err(e) = summary::save_cache(&app.session_id, &app.cache) {
                         app.error = Some(e.to_string());
                     }
@@ -939,13 +1061,26 @@ fn maybe_summarize(app: &mut App) {
         .clone()
         .or_else(|| app.tr.free.title.clone());
     let generation = app.generation;
+    let snapshot = match todos::path(&app.session_id).and_then(|p| todos::load(&p)) {
+        Ok(store) => store.items,
+        Err(e) => {
+            app.error = Some(e.to_string());
+            app.dirty = false;
+            return;
+        }
+    };
     let tx = app.tx.clone();
     app.analyzing = true;
     app.last_summary_started = Some(Instant::now());
     app.dirty = false;
     thread::spawn(move || {
-        let result = summary::summarize(&prev, &text, title.as_deref());
-        let _ = tx.send(Msg::Summary(Box::new(result), turns_done, generation));
+        let result = summary::summarize(&prev, &text, title.as_deref(), &snapshot);
+        let _ = tx.send(Msg::Summary(
+            Box::new(result),
+            turns_done,
+            generation,
+            snapshot,
+        ));
     });
 }
 
