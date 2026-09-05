@@ -3,7 +3,7 @@
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 /// Fields Claude Code writes as their own transcript entries; free to read, no model needed.
@@ -32,7 +32,9 @@ pub enum Turn {
 pub struct Transcript {
     pub path: PathBuf,
     offset: u64,
-    partial: String,
+    partial: Vec<u8>,
+    tail: Vec<u8>,
+    pub revision: u64,
     pub free: Free,
     pub turns: Vec<Turn>,
 }
@@ -40,6 +42,7 @@ pub struct Transcript {
 /// Where Claude Code will write a session's transcript for a given working directory
 /// (the project slug replaces every non-alphanumeric character with '-').
 pub fn expected_path(cwd: &str, session_id: &str) -> Result<PathBuf> {
+    validate_session_id(session_id)?;
     let slug: String = cwd
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
@@ -53,6 +56,7 @@ pub fn expected_path(cwd: &str, session_id: &str) -> Result<PathBuf> {
 
 /// Locate a session's transcript under any project directory.
 pub fn find_transcript(session_id: &str) -> Result<PathBuf> {
+    validate_session_id(session_id)?;
     let projects = dirs::home_dir()
         .ok_or_else(|| anyhow!("no home dir"))?
         .join(".claude/projects");
@@ -69,12 +73,27 @@ pub fn find_transcript(session_id: &str) -> Result<PathBuf> {
     Err(anyhow!("no transcript found for session {session_id}"))
 }
 
+pub fn validate_session_id(session_id: &str) -> Result<()> {
+    if session_id.is_empty()
+        || !session_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err(anyhow!(
+            "invalid session id: use letters, numbers, hyphens, or underscores"
+        ));
+    }
+    Ok(())
+}
+
 impl Transcript {
     pub fn open(path: &Path) -> Transcript {
         Transcript {
             path: path.to_path_buf(),
             offset: 0,
-            partial: String::new(),
+            partial: Vec::new(),
+            tail: Vec::new(),
+            revision: 0,
             free: Free::default(),
             turns: Vec::new(),
         }
@@ -87,32 +106,46 @@ impl Transcript {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
             Err(e) => return Err(e.into()),
         };
+        let mut replaced = file.metadata()?.len() < self.offset;
+        if !replaced && !self.tail.is_empty() {
+            file.seek(SeekFrom::Start(self.offset - self.tail.len() as u64))?;
+            let mut tail = vec![0; self.tail.len()];
+            file.read_exact(&mut tail)?;
+            replaced = tail != self.tail;
+        }
+        if replaced {
+            self.offset = 0;
+            self.partial.clear();
+            self.tail.clear();
+            self.turns.clear();
+            self.free = Free::default();
+            self.revision = self.revision.wrapping_add(1);
+        }
         file.seek(SeekFrom::Start(self.offset))?;
         let mut reader = BufReader::new(file);
         let before = self.turns.len();
-        let mut buf = String::new();
+        let mut buf = Vec::new();
         loop {
             buf.clear();
-            let n = reader.read_line(&mut buf)?;
+            let n = reader.read_until(b'\n', &mut buf)?;
             if n == 0 {
                 break;
             }
             self.offset += n as u64;
-            if !buf.ends_with('\n') {
-                self.partial.push_str(&buf);
+            self.partial.extend_from_slice(&buf);
+            if !buf.ends_with(b"\n") {
                 break;
             }
-            let line = if self.partial.is_empty() {
-                buf.trim_end().to_string()
-            } else {
-                let mut l = std::mem::take(&mut self.partial);
-                l.push_str(buf.trim_end());
-                l
-            };
-            if let Ok(v) = serde_json::from_str::<Value>(&line) {
+            let line = std::mem::take(&mut self.partial);
+            if let Ok(v) = serde_json::from_slice::<Value>(&line) {
                 self.ingest(&v);
             }
         }
+        let mut file = reader.into_inner();
+        let tail_len = self.offset.min(128) as usize;
+        file.seek(SeekFrom::Start(self.offset - tail_len as u64))?;
+        self.tail.resize(tail_len, 0);
+        file.read_exact(&mut self.tail)?;
         Ok(self.turns.len() - before)
     }
 
@@ -171,6 +204,24 @@ impl Transcript {
                             text.push('\n');
                         }
                     }
+                    if b.get("type").and_then(Value::as_str) == Some("tool_result") {
+                        let outcome = match b.get("content") {
+                            Some(Value::String(s)) => s.clone(),
+                            Some(Value::Array(parts)) => parts
+                                .iter()
+                                .filter_map(|p| p.get("text").and_then(Value::as_str))
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                            _ => String::new(),
+                        };
+                        let status = if b.get("is_error").and_then(Value::as_bool) == Some(true) {
+                            "error"
+                        } else {
+                            "result"
+                        };
+                        self.turns
+                            .push(Turn::Tool(format!("{status}: {}", clip(&outcome, 1500))));
+                    }
                 }
             }
             _ => {}
@@ -223,7 +274,7 @@ impl Transcript {
                 Turn::Assistant(s) => {
                     out.push_str(&format!("[t{i}] CLAUDE: {}\n\n", clip(s, 2000)))
                 }
-                Turn::Tool(s) => out.push_str(&format!("  [tool] {}\n", clip(s, 160))),
+                Turn::Tool(s) => out.push_str(&format!("[t{i}] TOOL: {}\n", clip(s, 1500))),
             }
         }
         if out.len() > max_chars {
@@ -242,6 +293,19 @@ impl Transcript {
             Turn::User(s) => Some(s.as_str()),
             _ => None,
         })
+    }
+
+    pub fn fingerprint(&self, count: usize) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        for turn in self.turns.iter().take(count) {
+            match turn {
+                Turn::User(s) => (0, s).hash(&mut hash),
+                Turn::Assistant(s) => (1, s).hash(&mut hash),
+                Turn::Tool(s) => (2, s).hash(&mut hash),
+            }
+        }
+        hash.finish()
     }
 }
 
@@ -304,6 +368,52 @@ pub fn clip(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn split_utf8_and_rewritten_transcript_recover_without_old_turns() {
+        use std::io::Write;
+        let mut tr = tr_with(&[r#"{"type":"user","message":{"content":"old"}}"#]);
+        let record = "{\"type\":\"user\",\"message\":{\"content\":\"café\"}}\n".as_bytes();
+        let split = record.iter().position(|b| *b == 0xc3).unwrap() + 1;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&tr.path)
+            .unwrap();
+        file.write_all(&record[..split]).unwrap();
+        assert_eq!(tr.read_new().unwrap(), 0);
+        file.write_all(&record[split..]).unwrap();
+        assert_eq!(tr.read_new().unwrap(), 1);
+        assert!(matches!(&tr.turns[1], Turn::User(s) if s == "café"));
+        drop(file);
+        let old_hash = tr.fingerprint(tr.turns.len());
+        std::fs::write(
+            &tr.path,
+            b"{\"type\":\"user\",\"message\":{\"content\":\"new\"}}\n",
+        )
+        .unwrap();
+        tr.read_new().unwrap();
+        assert_eq!(tr.turns.len(), 1);
+        assert_eq!(tr.revision, 1);
+        assert_ne!(old_hash, tr.fingerprint(tr.turns.len()));
+        std::fs::write(
+            &tr.path,
+            b"{\"type\":\"user\",\"message\":{\"content\":\"alt\"}}\n",
+        )
+        .unwrap();
+        tr.read_new().unwrap();
+        assert!(matches!(&tr.turns[0], Turn::User(s) if s == "alt"));
+        assert_eq!(tr.revision, 2);
+    }
+
+    #[test]
+    fn tool_failures_are_evidence_with_absolute_turn_indices() {
+        let tr = tr_with(&[
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"content":"test failed: duplicate charge"}]}}"#,
+        ]);
+        assert!(tr
+            .render(0, 10000)
+            .contains("[t0] TOOL: error: test failed: duplicate charge"));
+    }
+
     static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
     fn tr_with(lines: &[&str]) -> Transcript {
@@ -338,7 +448,7 @@ mod tests {
             r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}"#,
             r#"{"type":"pr-link","prNumber":42}"#,
         ]);
-        assert_eq!(tr.turns.len(), 3);
+        assert_eq!(tr.turns.len(), 4);
         assert!(matches!(&tr.turns[0], Turn::User(t) if t == "fix login"));
         assert!(matches!(&tr.turns[1], Turn::Assistant(t) if t == "On it."));
         assert!(matches!(&tr.turns[2], Turn::Tool(t) if t == "Bash: run tests"));

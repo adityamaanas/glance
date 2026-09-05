@@ -1,0 +1,16 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "result": "The summary is ready.",
+  "structured_output": {
+    "topline": "Fix retry handling",
+    "now": "Tests passed",
+    "focus": "trunk",
+    "branches": [],
+    "plan": [{"text": "Verify the regression", "status": "done", "branch": "trunk", "turn": 2}],
+    "open_questions": [],
+    "decisions": [],
+    "blockers": []
+  }
+}

@@ -74,7 +74,7 @@ enum Msg {
     Status(String),
     Key(KeyCode, KeyModifiers),
     Tick,
-    Summary(Result<Summary>, usize),
+    Summary(Result<Summary>, usize, u64),
 }
 
 fn main() -> Result<()> {
@@ -101,12 +101,17 @@ fn main() -> Result<()> {
 fn hook_main() -> Result<()> {
     let mut input = String::new();
     let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut input);
-    let decision = if input.contains("\"agent_id\"") {
+    let hook_input: serde_json::Value = serde_json::from_str(&input).unwrap_or_default();
+    let decision = if hook_input
+        .get("agent_id")
+        .and_then(serde_json::Value::as_str)
+        .is_some()
+    {
         "skip: subagent".to_string()
     } else if std::env::var("HERDR_PANE_ID").is_err() {
         "skip: not in herdr".to_string()
-    } else if let Some(cmd) = print_mode_ancestor() {
-        format!("skip: print mode ({cmd})")
+    } else if print_mode_ancestor().is_some() {
+        "skip: print mode".to_string()
     } else {
         match attach(0.3, false) {
             Ok(()) => "attach: ok".to_string(),
@@ -164,11 +169,18 @@ fn print_mode_ancestor() -> Option<String> {
 }
 
 fn attach(ratio: f64, force: bool) -> Result<()> {
+    if !ratio.is_finite() || ratio <= 0.0 || ratio >= 1.0 {
+        bail!("ratio must be greater than 0 and less than 1");
+    }
     let pane = std::env::var("HERDR_PANE_ID")
         .context("HERDR_PANE_ID not set; run this inside a herdr pane")?;
     let client = herdr::Client::from_env().ok_or_else(|| anyhow!("herdr socket not found"))?;
     let exe = std::env::current_exe()?.to_string_lossy().to_string();
-    let command = format!("{exe} --pane {pane}");
+    let command = format!(
+        "{} --pane {}",
+        shell_words::quote(&exe),
+        shell_words::quote(&pane)
+    );
     let others: Vec<String> = client
         .tab_panes(&pane)?
         .into_iter()
@@ -234,7 +246,13 @@ fn start_in_pane(client: &herdr::Client, pane: &str, command: &str) -> Result<()
         }
         thread::sleep(Duration::from_millis(250));
     }
+    if !is_idle_shell(&client.foreground_names(pane).unwrap_or_default()) {
+        bail!("pane {pane} did not become an idle shell");
+    }
     for _ in 0..2 {
+        if !is_idle_shell(&client.foreground_names(pane).unwrap_or_default()) {
+            bail!("pane {pane} is no longer an idle shell");
+        }
         herdr::run_in_pane(pane, command)?;
         let up_by = Instant::now() + Duration::from_secs(5);
         while Instant::now() < up_by {
@@ -260,6 +278,7 @@ fn summarize_once(session: &str) -> Result<()> {
         version: summary::CACHE_VERSION,
         summary: s,
         turns_done: tr.turns.len(),
+        fingerprint: tr.fingerprint(tr.turns.len()),
         updated_at: summary::now_secs(),
         source: summary::model(),
     };
@@ -276,6 +295,7 @@ struct App {
     cache: Cache,
     agent_status: Option<String>,
     analyzing: bool,
+    generation: u64,
     dirty: bool,
     last_growth: Option<Instant>,
     error: Option<String>,
@@ -290,6 +310,36 @@ struct App {
 }
 
 impl App {
+    fn finish_summary(
+        &mut self,
+        result: Result<Summary>,
+        turns_done: usize,
+        generation: u64,
+    ) -> bool {
+        if self.generation != generation {
+            return false;
+        }
+        self.analyzing = false;
+        match result {
+            Ok(summary) => {
+                self.cache = Cache {
+                    version: summary::CACHE_VERSION,
+                    summary,
+                    turns_done,
+                    fingerprint: self.tr.fingerprint(turns_done),
+                    updated_at: summary::now_secs(),
+                    source: summary::model(),
+                };
+                self.error = None;
+                true
+            }
+            Err(e) => {
+                self.error = Some(e.to_string());
+                false
+            }
+        }
+    }
+
     fn focus(&self) -> Focus {
         if !self.cache.summary.is_multi() {
             return Focus::All;
@@ -363,13 +413,16 @@ fn run(cli: Cli) -> Result<()> {
     };
     let mut tr = Transcript::open(&path);
     tr.read_new()?;
-    let cache = summary::load_cache(&session_id).unwrap_or_else(|| Cache {
-        version: summary::CACHE_VERSION,
-        summary: summary::heuristic(&tr),
-        turns_done: 0,
-        updated_at: 0,
-        source: "heuristic".into(),
-    });
+    let cache = summary::load_cache(&session_id)
+        .filter(|c| c.turns_done <= tr.turns.len() && c.fingerprint == tr.fingerprint(c.turns_done))
+        .unwrap_or_else(|| Cache {
+            version: summary::CACHE_VERSION,
+            summary: summary::heuristic(&tr),
+            turns_done: 0,
+            fingerprint: 0,
+            updated_at: 0,
+            source: "heuristic".into(),
+        });
 
     let watched_path = Arc::new(Mutex::new(tr.path.clone()));
     let mut app = App {
@@ -381,6 +434,7 @@ fn run(cli: Cli) -> Result<()> {
         cache,
         agent_status,
         analyzing: false,
+        generation: 0,
         dirty: true,
         last_growth: Some(Instant::now() - Duration::from_secs(10)),
         error: None,
@@ -448,13 +502,15 @@ fn wait_for_session(client: &herdr::Client, pane: &str) -> Result<herdr::AgentIn
 
 fn spawn_poller(path: Arc<Mutex<std::path::PathBuf>>, tx: Sender<Msg>) {
     thread::spawn(move || {
-        let mut last_len = 0u64;
+        let mut last = None;
         loop {
             thread::sleep(Duration::from_millis(700));
             let p = path.lock().map(|g| g.clone()).unwrap_or_default();
-            let len = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(last_len);
-            if len != last_len {
-                last_len = len;
+            let signature = std::fs::metadata(&p)
+                .ok()
+                .map(|m| (p, m.len(), m.modified().ok()));
+            if signature != last {
+                last = signature;
                 if tx.send(Msg::Grew).is_err() {
                     return;
                 }
@@ -509,8 +565,20 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
         let msg = rx.recv_timeout(Duration::from_secs(1)).unwrap_or(Msg::Tick);
         match msg {
             Msg::Grew => {
+                let revision = app.tr.revision;
                 if let Err(e) = app.tr.read_new() {
                     app.error = Some(e.to_string());
+                }
+                if revision != app.tr.revision {
+                    app.generation = app.generation.wrapping_add(1);
+                    app.analyzing = false;
+                    app.cache = Cache {
+                        summary: summary::heuristic(&app.tr),
+                        ..Cache::default()
+                    };
+                }
+                if app.cache.updated_at == 0 {
+                    app.cache.summary = summary::heuristic(&app.tr);
                 }
                 app.dirty = true;
                 app.last_growth = Some(Instant::now());
@@ -569,23 +637,11 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
                 _ => {}
             },
             Msg::Tick => {}
-            Msg::Summary(result, turns_done) => {
-                app.analyzing = false;
-                match result {
-                    Ok(s) => {
-                        app.cache = Cache {
-                            version: summary::CACHE_VERSION,
-                            summary: s,
-                            turns_done,
-                            updated_at: summary::now_secs(),
-                            source: summary::model(),
-                        };
-                        app.error = None;
-                        if let Err(e) = summary::save_cache(&app.session_id, &app.cache) {
-                            app.error = Some(e.to_string());
-                        }
+            Msg::Summary(result, turns_done, generation) => {
+                if app.finish_summary(result, turns_done, generation) {
+                    if let Err(e) = summary::save_cache(&app.session_id, &app.cache) {
+                        app.error = Some(e.to_string());
                     }
-                    Err(e) => app.error = Some(e.to_string()),
                 }
             }
         }
@@ -608,25 +664,37 @@ fn follow_session_change(app: &mut App) {
     if sid == app.session_id {
         return;
     }
-    let Ok(path) = transcript::find_transcript(&sid) else {
+    let Ok(path) = transcript::find_transcript(&sid).or_else(|e| {
+        info.cwd
+            .as_deref()
+            .map(|cwd| transcript::expected_path(cwd, &sid))
+            .unwrap_or(Err(e))
+    }) else {
         return;
     };
     let mut tr = Transcript::open(&path);
     if tr.read_new().is_err() {
         return;
     }
-    app.cache = summary::load_cache(&sid).unwrap_or_else(|| Cache {
-        version: summary::CACHE_VERSION,
-        summary: summary::heuristic(&tr),
-        turns_done: 0,
-        updated_at: 0,
-        source: "heuristic".into(),
-    });
+    app.cache = summary::load_cache(&sid)
+        .filter(|c| c.turns_done <= tr.turns.len() && c.fingerprint == tr.fingerprint(c.turns_done))
+        .unwrap_or_else(|| Cache {
+            version: summary::CACHE_VERSION,
+            summary: summary::heuristic(&tr),
+            turns_done: 0,
+            fingerprint: 0,
+            updated_at: 0,
+            source: "heuristic".into(),
+        });
     if let Ok(mut guard) = app.watched_path.lock() {
         *guard = path;
     }
     app.tr = tr;
     app.session_id = sid;
+    app.generation = app.generation.wrapping_add(1);
+    app.analyzing = false;
+    app.pinned = false;
+    app.focus_override = None;
     app.dirty = true;
     app.scroll = 0;
     app.error = None;
@@ -661,12 +729,13 @@ fn maybe_summarize(app: &mut App) {
         .clone()
         .or_else(|| app.tr.free.title.clone());
     let turns_done = app.tr.turns.len();
+    let generation = app.generation;
     let tx = app.tx.clone();
     app.analyzing = true;
     app.dirty = false;
     thread::spawn(move || {
         let result = summary::summarize(&prev, &text, title.as_deref());
-        let _ = tx.send(Msg::Summary(result, turns_done));
+        let _ = tx.send(Msg::Summary(result, turns_done, generation));
     });
 }
 
@@ -688,4 +757,52 @@ fn draw(app: &App, terminal: &mut Term) -> Result<()> {
     };
     terminal.draw(|f| view::draw(f, &state))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_session_switch_rejects_old_results_without_releasing_new_worker() {
+        let (tx, _) = mpsc::channel();
+        let path = std::path::PathBuf::from("unused.jsonl");
+        let mut app = App {
+            session_id: "new-session".into(),
+            client: None,
+            pane: None,
+            watched_path: Arc::new(Mutex::new(path.clone())),
+            tr: Transcript::open(&path),
+            cache: Cache::default(),
+            agent_status: None,
+            analyzing: true,
+            generation: 2,
+            dirty: false,
+            last_growth: None,
+            error: None,
+            scroll: 0,
+            no_model: true,
+            offer: false,
+            focus_override: None,
+            pinned: false,
+            rail: false,
+            tx,
+        };
+        let old = Summary {
+            topline: "old session".into(),
+            ..Summary::default()
+        };
+        assert!(!app.finish_summary(Ok(old), 900, 1));
+        assert_eq!(app.cache.turns_done, 0);
+        assert!(app.cache.summary.topline.is_empty());
+        assert!(app.analyzing);
+        let new = Summary {
+            topline: "new session".into(),
+            ..Summary::default()
+        };
+        assert!(app.finish_summary(Ok(new), 3, 2));
+        assert_eq!(app.cache.turns_done, 3);
+        assert_eq!(app.cache.summary.topline, "new session");
+        assert!(!app.analyzing);
+    }
 }

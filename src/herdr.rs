@@ -111,6 +111,12 @@ impl Client {
                     ]}
                 });
                 if stream.write_all(format!("{}\n", req).as_bytes()).is_ok() {
+                    // Refresh state after disconnects, even if no new event follows.
+                    if let Ok(info) = (Client { path: path.clone() }).agent_get(&pane_id) {
+                        if tx.send(info.agent_status).is_err() {
+                            return;
+                        }
+                    }
                     let reader = BufReader::new(stream);
                     for line in reader.lines().map_while(Result::ok) {
                         let Ok(v) = serde_json::from_str::<Value>(&line) else {
@@ -180,4 +186,36 @@ pub fn run_in_pane(pane_id: &str, command: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn subscription_refreshes_current_state_without_an_event() {
+        use std::os::unix::net::UnixListener;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("herdr.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = thread::spawn(move || {
+            let (subscription, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(&subscription).read_line(&mut line).unwrap();
+            assert!(line.contains("events.subscribe"));
+            let (mut state, _) = listener.accept().unwrap();
+            line.clear();
+            BufReader::new(&state).read_line(&mut line).unwrap();
+            assert!(line.contains("agent.get"));
+            writeln!(
+                state,
+                "{}",
+                json!({"result":{"agent":{"agent_status":"idle","agent_session":{"value":"new"}}}})
+            )
+            .unwrap();
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        Client { path }.watch_status("pane".into(), tx);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), "idle");
+        server.join().unwrap();
+    }
 }
