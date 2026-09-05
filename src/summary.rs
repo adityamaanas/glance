@@ -42,7 +42,7 @@ pub fn configure(cli: Option<&str>, config: &crate::setup::Config) {
 const TIMEOUT: Duration = Duration::from_secs(150);
 const MAX_NEW_CHARS: usize = 60_000;
 
-pub const CACHE_VERSION: u32 = 3;
+pub const CACHE_VERSION: u32 = 4;
 
 fn trunk() -> String {
     "trunk".to_string()
@@ -60,6 +60,8 @@ pub struct Branch {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct PlanItem {
+    #[serde(flatten)]
+    pub evidence: crate::evidence::Evidence,
     pub text: String,
     pub status: String,
     #[serde(default = "trunk")]
@@ -70,6 +72,8 @@ pub struct PlanItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct Item {
+    #[serde(flatten)]
+    pub evidence: crate::evidence::Evidence,
     pub text: String,
     #[serde(default = "trunk")]
     pub branch: String,
@@ -109,6 +113,12 @@ pub struct Usage {
 impl Summary {
     /// Point every item at a branch that exists; the model sometimes invents or drops ids.
     pub fn normalize(&mut self) {
+        self.plan.truncate(8);
+        self.open_questions.truncate(5);
+        self.decisions.truncate(6);
+        self.blockers.truncate(3);
+        self.branches.truncate(64);
+        crate::evidence::normalize(self, usize::MAX);
         let ids: Vec<String> = self.branches.iter().map(|b| b.id.clone()).collect();
         let fix = |b: &mut String| {
             if b != "trunk" && !ids.contains(b) {
@@ -252,7 +262,7 @@ pub fn summarize(prev: &Summary, new_turns: &str, title: Option<&str>) -> Result
     let item = json!({"type": "object", "properties": {
         "text": {"type": "string"}, "branch": {"type": "string"}, "turn": {"type": "integer"}
     }, "required": ["text", "branch", "turn"]});
-    let schema = json!({
+    let mut schema = json!({
         "type": "object",
         "properties": {
             "topline": {"type": "string"},
@@ -274,6 +284,16 @@ pub fn summarize(prev: &Summary, new_turns: &str, title: Option<&str>) -> Result
         },
         "required": ["topline", "now", "focus", "branches", "plan", "open_questions", "decisions", "blockers"]
     });
+    for field in ["plan", "open_questions", "decisions", "blockers"] {
+        let item = &mut schema["properties"][field]["items"];
+        item["properties"]["id"] = json!({"type":"string"});
+        item["properties"]["source_turns"] =
+            json!({"type":"array","items":{"type":"integer","minimum":0}});
+        item["properties"]["from"] = json!({"type":["string","null"]});
+        if let Some(required) = item["required"].as_array_mut() {
+            required.extend([json!("id"), json!("source_turns"), json!("from")]);
+        }
+    }
     let prompt = format!(
         "Session title: {}\n\nPREVIOUS PANEL STATE:\n{}\n\nNEW TRANSCRIPT TURNS:\n{}\n\nReturn the updated panel state.",
         title.unwrap_or("(untitled)"),
@@ -288,8 +308,7 @@ pub fn summarize(prev: &Summary, new_turns: &str, title: Option<&str>) -> Result
         .args([
             "--append-system-prompt",
             &format!(
-                "{}\n{}",
-                SYSTEM,
+                "{SYSTEM}\nEvery item needs a stable id, source_turns containing the absolute turn indices that support it, and from (the id of the step or question it follows from, or null). Reuse prior IDs. Do not invent evidence or relationships; use an empty source list when unknown.\n{}",
                 OPTIONS.get().and_then(|o| o.1.as_deref()).unwrap_or("")
             ),
         ])
@@ -603,18 +622,21 @@ mod tests {
                     status: "pending".into(),
                     branch: "a".into(),
                     turn: 1,
+                    ..Default::default()
                 },
                 PlanItem {
                     text: "y".into(),
                     status: "pending".into(),
                     branch: "zzz".into(),
                     turn: 2,
+                    ..Default::default()
                 },
             ],
             open_questions: vec![Item {
                 text: "q".into(),
                 branch: "nope".into(),
                 turn: 0,
+                ..Default::default()
             }],
             ..Summary::default()
         };

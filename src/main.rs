@@ -1,5 +1,6 @@
 //! glance: a live orientation panel for one Claude Code session, meant for a herdr split pane.
 
+mod evidence;
 mod herdr;
 mod setup;
 mod summary;
@@ -9,7 +10,10 @@ mod view;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseEvent,
+    MouseEventKind,
+};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -51,6 +55,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Show cached item relationships, or export a standalone HTML graph.
+    Graph {
+        #[arg(long)]
+        session: String,
+        #[arg(long, num_args = 0..=1, default_missing_value = "glance-graph.html")]
+        html: Option<std::path::PathBuf>,
+        #[arg(long, requires = "html")]
+        open: bool,
+    },
     /// Remove old summary caches; personal configuration and todos are preserved.
     CacheClean {
         #[arg(long, default_value_t = 30)]
@@ -88,6 +101,7 @@ enum Msg {
     Status(String),
     Key(KeyCode, KeyModifiers),
     Tick,
+    Mouse(MouseEvent),
     Summary(Box<Result<Summary>>, usize, u64),
 }
 
@@ -113,6 +127,11 @@ fn main() -> Result<()> {
         }
     }
     match cli.command {
+        Some(Cmd::Graph {
+            session,
+            html,
+            open,
+        }) => export_graph(&session, html, open),
         Some(Cmd::CacheClean {
             older_than_days,
             dry_run,
@@ -328,6 +347,7 @@ fn summarize_once(session: &str) -> Result<()> {
             tr.turns.len()
         );
         s = summary::summarize(&s, &text, tr.free.title.as_deref())?;
+        evidence::normalize(&mut s, end);
         from = end;
     }
     println!("{}", serde_json::to_string_pretty(&s)?);
@@ -341,6 +361,38 @@ fn summarize_once(session: &str) -> Result<()> {
         source: summary::model(),
     };
     summary::save_cache(session, &cache)?;
+    Ok(())
+}
+
+fn export_graph(session: &str, path: Option<std::path::PathBuf>, launch: bool) -> Result<()> {
+    let mut tr = Transcript::open(&transcript::find_transcript(session)?);
+    tr.read_new()?;
+    let mut cache =
+        summary::load_cache(session).context("no compatible summary cache; run summarize first")?;
+    if cache.turns_done > tr.turns.len() || cache.fingerprint != tr.fingerprint(cache.turns_done) {
+        bail!("summary cache belongs to a different transcript revision; refresh it first");
+    }
+    evidence::normalize(&mut cache.summary, cache.turns_done);
+    if let Some(path) = path {
+        let path = std::path::absolute(path)?;
+        setup::atomic_write(&path, evidence::html(&cache.summary, &tr)?.as_bytes())?;
+        println!("{}", path.display());
+        if launch {
+            open::that(&path)?;
+        }
+    } else {
+        let nodes = evidence::nodes(&cache.summary);
+        for (idx, depth) in evidence::graph_rows(&nodes) {
+            let n = &nodes[idx];
+            println!(
+                "{}{} [{}] {}",
+                "  ".repeat(depth),
+                if depth == 0 { "●" } else { "└─" },
+                n.id,
+                n.text
+            );
+        }
+    }
     Ok(())
 }
 
@@ -366,6 +418,9 @@ struct App {
     focus_override: Option<Focus>,
     pinned: bool,
     rail: bool,
+    inspect: bool,
+    graph: bool,
+    selection: usize,
     tx: Sender<Msg>,
 }
 
@@ -381,7 +436,8 @@ impl App {
         }
         self.analyzing = false;
         match result {
-            Ok(summary) => {
+            Ok(mut summary) => {
+                evidence::normalize(&mut summary, turns_done);
                 self.cache = Cache {
                     version: summary::CACHE_VERSION,
                     summary,
@@ -507,6 +563,9 @@ fn run(cli: Cli) -> Result<()> {
         focus_override: None,
         pinned: false,
         rail: false,
+        inspect: false,
+        graph: false,
+        selection: 0,
         tx: tx.clone(),
     };
 
@@ -586,10 +645,15 @@ fn spawn_input(tx: Sender<Msg>) {
     thread::spawn(move || loop {
         match event::poll(Duration::from_millis(500)) {
             Ok(true) => {
-                if let Ok(Event::Key(k)) = event::read() {
-                    if tx.send(Msg::Key(k.code, k.modifiers)).is_err() {
-                        return;
+                let msg = match event::read() {
+                    Ok(Event::Key(k)) if k.kind != event::KeyEventKind::Release => {
+                        Msg::Key(k.code, k.modifiers)
                     }
+                    Ok(Event::Mouse(m)) => Msg::Mouse(m),
+                    _ => Msg::Tick,
+                };
+                if tx.send(msg).is_err() {
+                    return;
                 }
             }
             Ok(false) => {
@@ -607,6 +671,7 @@ type Term = ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout
 fn init_terminal() -> Result<Term> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
+    stdout().execute(EnableMouseCapture)?;
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore_terminal();
@@ -620,13 +685,51 @@ fn init_terminal() -> Result<Term> {
 fn restore_terminal() {
     let _ = disable_raw_mode();
     let _ = stdout().execute(LeaveAlternateScreen);
+    let _ = stdout().execute(DisableMouseCapture);
 }
 
 fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<()> {
     draw(app, terminal)?;
     loop {
         let msg = rx.recv_timeout(Duration::from_secs(1)).unwrap_or(Msg::Tick);
+        let previous_view = (app.selection, app.inspect, app.graph, app.focus());
         match msg {
+            Msg::Mouse(mouse) => {
+                if app.inspect || app.graph {
+                    match mouse.kind {
+                        MouseEventKind::ScrollDown => {
+                            app.selection = app.selection.saturating_add(1).min(
+                                view::navigation_rows(&app.cache.summary, &app.focus(), app.graph)
+                                    .len()
+                                    .saturating_sub(1),
+                            )
+                        }
+                        MouseEventKind::ScrollUp => app.selection = app.selection.saturating_sub(1),
+                        MouseEventKind::Down(event::MouseButton::Left) => {
+                            let size = terminal.size()?;
+                            if let Some(index) = view::selection_at(
+                                size.width,
+                                size.height,
+                                app.offer,
+                                app.selection,
+                                mouse.column,
+                                mouse.row,
+                            ) {
+                                app.selection = index.min(
+                                    view::navigation_rows(
+                                        &app.cache.summary,
+                                        &app.focus(),
+                                        app.graph,
+                                    )
+                                    .len()
+                                    .saturating_sub(1),
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
             Msg::Grew => {
                 let revision = app.tr.revision;
                 if let Err(e) = app.tr.read_new() {
@@ -669,6 +772,10 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
                 let _ = setup::record_offer("declined");
             }
             Msg::Key(code, mods) => match code {
+                KeyCode::Esc if app.inspect || app.graph => {
+                    app.inspect = false;
+                    app.graph = false;
+                }
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                 KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => return Ok(()),
                 KeyCode::Char('r') => {
@@ -680,9 +787,32 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
                         .turns_done
                         .min(app.tr.turns.len().saturating_sub(1));
                 }
-                KeyCode::Down | KeyCode::Char('j') => app.scroll = app.scroll.saturating_add(1),
-                KeyCode::Up | KeyCode::Char('k') => app.scroll = app.scroll.saturating_sub(1),
+                KeyCode::Char('e') | KeyCode::Enter => {
+                    app.inspect = !app.inspect;
+                    app.graph = false;
+                }
+                KeyCode::Char('g') => {
+                    app.graph = !app.graph;
+                    app.inspect = false;
+                    app.selection = 0;
+                }
+                KeyCode::Down => {
+                    app.inspect = !app.graph;
+                    app.selection = app.selection.saturating_add(1).min(
+                        view::navigation_rows(&app.cache.summary, &app.focus(), app.graph)
+                            .len()
+                            .saturating_sub(1),
+                    );
+                }
+                KeyCode::Up => {
+                    app.inspect = !app.graph;
+                    app.selection = app.selection.saturating_sub(1);
+                }
+                KeyCode::Char('j') => app.scroll = app.scroll.saturating_add(1),
+                KeyCode::Char('k') => app.scroll = app.scroll.saturating_sub(1),
                 KeyCode::Char('v') => {
+                    app.inspect = false;
+                    app.graph = false;
                     app.rail = !app.rail;
                     app.scroll = 0;
                 }
@@ -708,6 +838,14 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
                     }
                 }
             }
+        }
+        app.selection = app.selection.min(
+            view::navigation_rows(&app.cache.summary, &app.focus(), app.graph)
+                .len()
+                .saturating_sub(1),
+        );
+        if previous_view != (app.selection, app.inspect, app.graph, app.focus()) {
+            app.scroll = 0;
         }
         maybe_summarize(app);
         draw(app, terminal)?;
@@ -762,6 +900,7 @@ fn follow_session_change(app: &mut App) {
     app.focus_override = None;
     app.dirty = true;
     app.scroll = 0;
+    app.selection = 0;
     app.error = None;
     app.last_growth = Some(Instant::now());
 }
@@ -825,6 +964,10 @@ fn draw(app: &App, terminal: &mut Term) -> Result<()> {
         focus: app.focus(),
         pinned: app.pinned,
         rail: app.rail,
+        inspect: app.inspect,
+        graph: app.graph,
+        selection: app.selection,
+        transcript: &app.tr,
     };
     terminal.draw(|f| view::draw(f, &state))?;
     Ok(())
@@ -859,6 +1002,9 @@ mod tests {
             focus_override: None,
             pinned: false,
             rail: false,
+            inspect: false,
+            graph: false,
+            selection: 0,
             tx,
         };
         let old = Summary {

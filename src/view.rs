@@ -2,10 +2,10 @@
 
 use crate::summary::{Item, PlanItem, Summary};
 use crate::transcript::{clip, Free};
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 
 /// What the panel is oriented on.
@@ -30,6 +30,10 @@ pub struct ViewState<'a> {
     pub focus: Focus,
     pub pinned: bool,
     pub rail: bool,
+    pub inspect: bool,
+    pub graph: bool,
+    pub selection: usize,
+    pub transcript: &'a crate::transcript::Transcript,
 }
 
 const ACCENT: Color = Color::Cyan;
@@ -115,6 +119,12 @@ pub fn draw(f: &mut Frame, s: &ViewState) {
         f.render_widget(banner, chunks[0]);
     }
 
+    if s.inspect || s.graph {
+        draw_navigation(f, s, chunks[1]);
+        f.render_widget(footer(s), chunks[2]);
+        return;
+    }
+
     let title = s
         .free
         .custom_title
@@ -143,6 +153,137 @@ pub fn draw(f: &mut Frame, s: &ViewState) {
     };
     f.render_widget(body, chunks[1]);
     f.render_widget(footer(s), chunks[2]);
+}
+
+pub fn navigation_rows(
+    summary: &Summary,
+    focus: &Focus,
+    graph: bool,
+) -> Vec<(crate::evidence::Node, usize)> {
+    let nodes = crate::evidence::nodes(summary);
+    let order = if graph {
+        crate::evidence::graph_rows(&nodes)
+    } else {
+        (0..nodes.len()).map(|i| (i, 0)).collect()
+    };
+    order
+        .into_iter()
+        .filter_map(|(i, depth)| {
+            let n = &nodes[i];
+            let visible = match focus {
+                Focus::All => true,
+                Focus::Trunk => n.branch == "trunk",
+                Focus::Branch(id) => n.branch == "trunk" || n.branch == *id,
+            };
+            visible.then(|| (n.clone(), depth))
+        })
+        .collect()
+}
+
+fn navigation_areas(area: Rect) -> [Rect; 3] {
+    let chunks = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(3),
+        Constraint::Length((area.height / 2).clamp(4, 12)),
+    ])
+    .split(area);
+    [chunks[0], chunks[1], chunks[2]]
+}
+
+pub fn selection_at(
+    width: u16,
+    height: u16,
+    offer: bool,
+    selected: usize,
+    x: u16,
+    y: u16,
+) -> Option<usize> {
+    let chunks = Layout::vertical([
+        Constraint::Length(if offer { 4 } else { 0 }),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .split(Rect::new(0, 0, width, height));
+    let list = navigation_areas(chunks[1])[1];
+    let inner = Block::default().borders(Borders::ALL).inner(list);
+    if !inner.contains((x, y).into()) {
+        return None;
+    }
+    let offset = selected.saturating_sub(inner.height.saturating_sub(1) as usize);
+    Some(offset + (y - inner.y) as usize)
+}
+
+fn draw_navigation(f: &mut Frame, s: &ViewState, area: Rect) {
+    let [header, list_area, drawer] = navigation_areas(area);
+    f.render_widget(
+        Paragraph::new(s.summary.topline.as_str()).block(
+            Block::default().borders(Borders::ALL).title(if s.graph {
+                " SESSION GRAPH "
+            } else {
+                " EXPLORE ITEMS "
+            }),
+        ),
+        header,
+    );
+    let rows = navigation_rows(s.summary, &s.focus, s.graph);
+    let selected = s.selection.min(rows.len().saturating_sub(1));
+    let entries: Vec<ListItem> = rows
+        .iter()
+        .map(|(n, depth)| {
+            let color = match n.kind.as_str() {
+                "question" => Color::Magenta,
+                "blocker" => Color::Red,
+                "decision" => ACCENT,
+                _ => Color::Yellow,
+            };
+            let prefix = if s.graph && *depth > 0 {
+                format!("{}└─ ", "  ".repeat((*depth).min(8)))
+            } else {
+                String::new()
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{prefix}[{}] ", n.id), Style::default().fg(DIM)),
+                Span::styled(n.text.clone(), Style::default().fg(color)),
+            ]))
+        })
+        .collect();
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" ↑ ↓ / click select · j k scroll evidence · Esc back ");
+    let capacity = block.inner(list_area).height;
+    let mut state = ListState::default().with_selected((!rows.is_empty()).then_some(selected));
+    *state.offset_mut() = selected.saturating_sub(capacity.saturating_sub(1) as usize);
+    f.render_stateful_widget(
+        List::new(entries)
+            .block(block)
+            .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White))
+            .highlight_symbol("› "),
+        list_area,
+        &mut state,
+    );
+    let text = rows
+        .get(selected)
+        .map(|(n, _)| {
+            let source = crate::evidence::excerpt(s.transcript, &n.source_turns);
+            let parent = n
+                .from
+                .as_deref()
+                .map(|p| format!("From item: {p}\n\n"))
+                .unwrap_or_default();
+            format!("{parent}{source}")
+        })
+        .unwrap_or_else(|| "No summary items yet.".into());
+    f.render_widget(
+        Paragraph::new(text)
+            .wrap(Wrap { trim: false })
+            .scroll((s.scroll, 0))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" TRANSCRIPT EVIDENCE "),
+            ),
+        drawer,
+    );
 }
 
 fn panel_lines(s: &ViewState, inner_w: usize) -> Vec<Line<'static>> {
@@ -279,9 +420,18 @@ fn branch_chips(s: &ViewState, width: usize) -> Vec<Line<'static>> {
             Style::default().fg(Color::Gray)
         },
     )]);
+    let mut done_shown = 0;
+    let mut done_hidden = 0;
     for b in &s.summary.branches {
         let (g, c) = branch_glyph(&b.status);
         let selected = matches!(&s.focus, Focus::Branch(id) if id == &b.id);
+        if b.status == "done" && !selected {
+            if done_shown >= 2 {
+                done_hidden += 1;
+                continue;
+            }
+            done_shown += 1;
+        }
         if selected {
             chips.push(vec![Span::styled(format!(" {g} {} ", b.name), sel)]);
         } else {
@@ -298,6 +448,12 @@ fn branch_chips(s: &ViewState, width: usize) -> Vec<Line<'static>> {
             ]);
         }
     }
+    if done_hidden > 0 {
+        chips.push(vec![Span::styled(
+            format!("+{done_hidden} done"),
+            Style::default().fg(DIM),
+        )]);
+    }
     pack_chips(chips, width, " ")
 }
 
@@ -307,7 +463,7 @@ fn pack_chips(chips: Vec<Vec<Span<'static>>>, width: usize, gap: &str) -> Vec<Li
     let mut cur: Vec<Span> = Vec::new();
     let mut cur_w = 0usize;
     for chip in chips {
-        let w: usize = chip.iter().map(|sp| sp.content.chars().count()).sum();
+        let w: usize = chip.iter().map(Span::width).sum();
         let sep = if cur.is_empty() {
             0
         } else {
@@ -618,12 +774,14 @@ fn footer(s: &ViewState) -> Paragraph<'static> {
     if s.pinned {
         spans.push(Span::styled("  pinned", Style::default().fg(ACCENT)));
     }
-    let keys = if s.rail {
+    let keys = if s.inspect || s.graph {
+        "  ↑↓ select · e evidence · g graph · Esc back"
+    } else if s.rail {
         "  v panel · j/k scroll · q quit"
     } else if s.summary.is_multi() {
         "  [ ] focus · 0 all · p follow · v rail · q quit"
     } else {
-        "  v rail · r refresh · q quit"
+        "  e evidence · g graph · v rail · r refresh · q quit"
     };
     spans.push(Span::styled(keys.to_string(), Style::default().fg(DIM)));
     Paragraph::new(Line::from(spans))
@@ -633,6 +791,52 @@ fn footer(s: &ViewState) -> Paragraph<'static> {
 mod tests {
     use super::*;
     use crate::summary::Branch;
+
+    #[test]
+    fn evidence_drawer_renders_sources_and_mouse_uses_the_list_geometry() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut tr = crate::transcript::Transcript::open(std::path::Path::new("unused"));
+        tr.turns.push(crate::transcript::Turn::User(
+            "The retry test passed.".into(),
+        ));
+        let mut summary: Summary = serde_json::from_value(serde_json::json!({"topline":"Verify retries", "plan":[{"id":"p1","text":"Run the test","status":"done","source_turns":[0]}]})).unwrap();
+        summary.normalize();
+        let state = ViewState {
+            free: &tr.free,
+            summary: &summary,
+            agent_status: None,
+            source: "fixture",
+            updated_at: 0,
+            analyzing: false,
+            error: None,
+            scroll: 0,
+            waiting: false,
+            offer: false,
+            focus: Focus::All,
+            pinned: false,
+            rail: false,
+            inspect: true,
+            graph: false,
+            selection: 0,
+            transcript: &tr,
+        };
+        for (width, height) in [(64, 28), (120, 40), (20, 8), (1, 1)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|f| draw(f, &state)).unwrap();
+            if width == 64 {
+                let text = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .map(|c| c.symbol())
+                    .collect::<String>();
+                assert!(text.contains("The retry test passed."));
+                assert_eq!(selection_at(width, height, false, 0, 2, 4), Some(0));
+                assert_eq!(selection_at(width, height, false, 0, 2, 20), None);
+            }
+        }
+    }
 
     fn chip(text: &str) -> Vec<Span<'static>> {
         vec![Span::raw(text.to_string())]
@@ -668,17 +872,20 @@ mod tests {
                     status: "pending".into(),
                     branch: "trunk".into(),
                     turn: 0,
+                    ..Default::default()
                 },
                 PlanItem {
                     text: "branch item".into(),
                     status: "pending".into(),
                     branch: "b".into(),
                     turn: 1,
+                    ..Default::default()
                 },
             ],
             ..Summary::default()
         };
         let free = Free::default();
+        let tr = crate::transcript::Transcript::open(std::path::Path::new("unused"));
         let mk = |focus: Focus| ViewState {
             free: &free,
             summary: &summary,
@@ -693,6 +900,10 @@ mod tests {
             focus,
             pinned: false,
             rail: false,
+            inspect: false,
+            graph: false,
+            selection: 0,
+            transcript: &tr,
         };
         let all = visible(&summary.plan, &mk(Focus::All));
         assert_eq!(all.len(), 2);
