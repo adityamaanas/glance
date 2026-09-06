@@ -98,13 +98,14 @@ pub fn attach(
     cwd: Option<&Path>,
     ratio: f64,
     no_model: bool,
+    kind: crate::harness::Kind,
 ) -> Result<()> {
     let cwd = cwd
         .map(Path::to_path_buf)
         .unwrap_or(std::env::current_dir()?);
     let session = match session {
         Some(id) => id,
-        None => crate::discovery::pick(Some(&cwd), None, true)?,
+        None => crate::discovery::pick(kind, Some(&cwd), None, true)?,
     };
     let mut cmd = command(
         backend,
@@ -114,6 +115,7 @@ pub fn attach(
         ratio,
         no_model,
     )?;
+    cmd.args(["--harness", kind.name()]);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

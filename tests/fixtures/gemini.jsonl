@@ -1,0 +1,8 @@
+{"sessionId":"same-id","projectHash":"project-hash","directories":["/project"]}
+{"id":"u1","type":"user","content":[{"text":"Check retries"}]}
+{"id":"a1","type":"gemini","content":"pending draft","thoughts":[{"text":"private reasoning"}]}
+{"id":"a1","type":"gemini","content":"Retries verified","toolCalls":[{"id":"tool1","name":"test","status":"success","result":[{"text":"retry test passed"}]}]}
+{"id":"u2","type":"user","content":"Discard this path"}
+{"id":"a2","type":"gemini","content":"Discard this result"}
+{"$rewindTo":"u2"}
+{"$set":{"summary":"Retry verification"}}

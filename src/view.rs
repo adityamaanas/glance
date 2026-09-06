@@ -441,7 +441,13 @@ fn panel_lines(s: &ViewState, inner_w: usize) -> Vec<Line<'static>> {
         lines.push(Line::raw(""));
     }
 
-    section(&mut lines, "LAST FROM CLAUDE");
+    section(
+        &mut lines,
+        &format!(
+            "LAST FROM {}",
+            s.free.agent.as_deref().unwrap_or("Claude").to_uppercase()
+        ),
+    );
     let last = s
         .free
         .last_assistant

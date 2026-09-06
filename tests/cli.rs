@@ -1,6 +1,56 @@
 use std::process::Command;
 
 #[test]
+fn agent_fixtures_exclude_discarded_history_and_do_not_share_todos() {
+    let dir = tempfile::tempdir().unwrap();
+    for (kind, fixture) in [
+        ("codex", include_str!("fixtures/codex.jsonl")),
+        ("gemini", include_str!("fixtures/gemini.jsonl")),
+        ("pi", include_str!("fixtures/pi.jsonl")),
+        ("cursor", include_str!("fixtures/cursor.jsonl")),
+        ("opencode", include_str!("fixtures/opencode.json")),
+    ] {
+        let path = dir.path().join(format!("{kind}.json"));
+        std::fs::write(&path, fixture).unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_glance-panel"))
+            .env("GLANCE_HOME", dir.path())
+            .args(["--harness", kind, "--no-model", "--transcript"])
+            .arg(&path)
+            .args(["transcript", "--session", "same-id"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}: {}",
+            kind,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(
+            value["turns"].as_array().unwrap().len(),
+            3,
+            "{kind}: {value}"
+        );
+        assert!(!value.to_string().contains("Discard"), "{kind}: {value}");
+        assert!(!value.to_string().contains("private reasoning"));
+        assert!(!value.to_string().contains("duplicate transport"));
+        let out = Command::new(env!("CARGO_BIN_EXE_glance-panel"))
+            .env("GLANCE_HOME", dir.path())
+            .args(["--harness", kind, "todo", kind, "--session", "same-id"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let list: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(list.as_array().unwrap().len(), 1);
+        assert_eq!(list[0]["text"], kind);
+    }
+}
+
+#[test]
 fn setup_is_idempotent_preserves_other_hooks_and_stop_records_no_text() {
     use std::io::Write;
     let dir = tempfile::tempdir().unwrap();

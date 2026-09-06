@@ -7,8 +7,9 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 /// Fields Claude Code writes as their own transcript entries; free to read, no model needed.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct Free {
+    pub agent: Option<String>,
     pub title: Option<String>,
     pub custom_title: Option<String>,
     pub last_prompt: Option<String>,
@@ -22,7 +23,7 @@ pub struct Free {
     pub last_timestamp: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub enum Turn {
     User(String),
     Assistant(String),
@@ -31,6 +32,8 @@ pub enum Turn {
 
 pub struct Transcript {
     pub path: PathBuf,
+    pub harness: crate::harness::Kind,
+    pub session_id: String,
     offset: u64,
     partial: Vec<u8>,
     tail: Vec<u8>,
@@ -100,6 +103,8 @@ impl Transcript {
     pub fn open(path: &Path) -> Transcript {
         Transcript {
             path: path.to_path_buf(),
+            harness: crate::harness::Kind::Claude,
+            session_id: String::new(),
             offset: 0,
             partial: Vec::new(),
             tail: Vec::new(),
@@ -109,8 +114,25 @@ impl Transcript {
         }
     }
 
+    pub fn open_for(path: &Path, harness: crate::harness::Kind, session_id: &str) -> Transcript {
+        let mut tr = Self::open(path);
+        tr.harness = harness;
+        tr.session_id = session_id.into();
+        tr
+    }
+
     /// Read appended lines; returns how many turns were added. A missing file reads as empty.
     pub fn read_new(&mut self) -> Result<usize> {
+        if self.harness != crate::harness::Kind::Claude {
+            let snapshot = crate::harness::read(self.harness, &self.path, &self.session_id)?;
+            let previous = self.turns.len();
+            if !snapshot.turns.starts_with(&self.turns) {
+                self.revision = self.revision.wrapping_add(1);
+            }
+            self.turns = snapshot.turns;
+            self.free = snapshot.free;
+            return Ok(self.turns.len().saturating_sub(previous));
+        }
         let mut file = match File::open(&self.path) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
@@ -381,6 +403,27 @@ pub fn clip(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn adapter_append_and_rollback_update_the_transcript_generation() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("codex.jsonl");
+        std::fs::write(&path, include_str!("../tests/fixtures/codex.jsonl")).unwrap();
+        let mut tr = super::Transcript::open_for(&path, crate::harness::Kind::Codex, "same-id");
+        assert_eq!(tr.read_new().unwrap(), 3);
+        assert_eq!(tr.revision, 0);
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(file, "{}", serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":"One more check"}})).unwrap();
+        assert_eq!(tr.read_new().unwrap(), 1);
+        assert_eq!(tr.revision, 0);
+        writeln!(file, "{}", serde_json::json!({"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}})).unwrap();
+        assert_eq!(tr.read_new().unwrap(), 0);
+        assert_eq!(tr.turns.len(), 3);
+        assert_eq!(tr.revision, 1);
+    }
     use super::*;
 
     #[test]

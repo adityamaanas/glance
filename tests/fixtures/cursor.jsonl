@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","session_id":"same-id","cwd":"/project"}
+{"type":"user","message":{"content":[{"type":"text","text":"Check retries"}]}}
+{"type":"tool_call","subtype":"completed","tool_call":{"shellToolCall":{"result":{"success":{"output":"retry test passed"}}}}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Retries verified"}]}}
+{"type":"result","result":"Retries verified","session_id":"same-id"}

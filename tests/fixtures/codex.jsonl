@@ -1,0 +1,10 @@
+{"type":"session_meta","payload":{"id":"same-id","cwd":"/project","base_instructions":"not conversation content"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"duplicate transport message"}]}}
+{"type":"event_msg","payload":{"type":"user_message","message":"Check retries"}}
+{"type":"response_item","payload":{"type":"reasoning","encrypted_content":"never display","summary":[{"text":"private reasoning"}]}}
+{"type":"response_item","payload":{"type":"function_call_output","output":"retry test passed"}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"Retries verified"}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Retries verified"}]}}
+{"type":"event_msg","payload":{"type":"user_message","message":"Discard this path"}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"Discard this result"}}
+{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}

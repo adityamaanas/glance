@@ -27,6 +27,7 @@ tempfile = "3"
 interprocess = "2.4"
 open = "5"
 fs2 = "0.4"
+rusqlite = { version = "0.37", features = ["bundled"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
