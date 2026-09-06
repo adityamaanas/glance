@@ -396,6 +396,7 @@ fn cursor(records: &[Value], bytes: &[u8]) -> Snapshot {
                         "{}: {}",
                         v["tool_name"].as_str().unwrap_or("tool"),
                         v.get("tool_output")
+                            .or(v.get("error_message"))
                             .or(v.get("error"))
                             .map(text)
                             .unwrap_or_default()
@@ -562,6 +563,14 @@ pub fn locate(kind: Kind, id: &str, explicit: Option<&Path>) -> Result<PathBuf> 
     }
     if kind == Kind::Claude {
         return crate::transcript::find_transcript(id);
+    }
+    if kind == Kind::Cursor {
+        let captured = crate::summary::state_dir()?
+            .join("cursor")
+            .join(format!("{id}.jsonl"));
+        if captured.is_file() {
+            return Ok(captured);
+        }
     }
     if kind == Kind::Opencode {
         let path = root(kind)?;
