@@ -1,0 +1,9 @@
+{
+  "name": "glance-panel",
+  "version": "0.2.0",
+  "description": "Session discovery and turn-end signals for the Glance orientation panel",
+  "author": { "name": "Glance contributors" },
+  "homepage": "https://github.com/adityamaanas/glance",
+  "repository": "https://github.com/adityamaanas/glance",
+  "license": "Apache-2.0"
+}
