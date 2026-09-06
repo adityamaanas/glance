@@ -1,8 +1,11 @@
 //! glance: a live orientation panel for one Claude Code session, meant for a herdr split pane.
 
+mod discovery;
 mod evidence;
 mod herdr;
+mod placement;
 mod setup;
+mod signals;
 mod summary;
 mod todos;
 mod transcript;
@@ -41,9 +44,15 @@ struct Cli {
     /// Claude Code session id to follow directly (no herdr needed).
     #[arg(long)]
     session: Option<String>,
+    /// Follow the most recently updated session for this project.
+    #[arg(long, conflicts_with_all = ["session", "pane"])]
+    cwd: Option<std::path::PathBuf>,
     /// Never call the model; show free fields and the cached summary only.
     #[arg(long)]
     no_model: bool,
+    /// Report the current step and progress to herdr's sidebar.
+    #[arg(long)]
+    sidebar: bool,
     /// Summary model (overrides GLANCE_MODEL and config.json).
     #[arg(long, global = true)]
     model: Option<String>,
@@ -56,6 +65,25 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Install or remove session and turn-end hooks for Claude Code.
+    Setup {
+        #[arg(long)]
+        remove: bool,
+        /// Accepted for unattended installation; invoking setup already opts in.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Choose a local session and print its ID.
+    Pick {
+        #[arg(long)]
+        cwd: Option<std::path::PathBuf>,
+        #[arg(long)]
+        query: Option<String>,
+        #[arg(long, conflicts_with = "list")]
+        latest: bool,
+        #[arg(long)]
+        list: bool,
+    },
     /// Manage personal reminders (defaults to this herdr pane's session).
     Todo {
         /// Text to append; omit to list todos.
@@ -91,6 +119,12 @@ enum Cmd {
     },
     /// From inside a Claude Code pane: split right and start the panel there.
     Attach {
+        #[arg(long, value_enum, default_value_t = placement::Backend::Auto)]
+        backend: placement::Backend,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        cwd: Option<std::path::PathBuf>,
         /// Fraction of the width the new pane takes.
         #[arg(long, default_value_t = 0.3)]
         ratio: f64,
@@ -138,6 +172,7 @@ fn main() -> Result<()> {
     };
     summary::configure(cli.model.as_deref(), &cfg);
     cli.no_model |= cfg.no_model;
+    cli.sidebar |= cfg.sidebar_metadata;
     cli.refresh_seconds = cli.refresh_seconds.or(cfg.refresh_seconds);
     if cli.command.is_none() {
         if let Some(days) = cfg.cache_retention_days {
@@ -145,6 +180,40 @@ fn main() -> Result<()> {
         }
     }
     match cli.command {
+        Some(Cmd::Setup { remove, .. }) => {
+            println!(
+                "{}",
+                if remove {
+                    setup::uninstall_hook()?
+                } else {
+                    setup::install_hook()?
+                }
+            );
+            setup::record_offer(if remove { "declined" } else { "accepted" })?;
+            Ok(())
+        }
+        Some(Cmd::Pick {
+            cwd,
+            query,
+            latest,
+            list,
+        }) => {
+            if list {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&discovery::sessions(
+                        cwd.as_deref(),
+                        query.as_deref()
+                    )?)?
+                );
+            } else {
+                println!(
+                    "{}",
+                    discovery::pick(cwd.as_deref(), query.as_deref(), latest)?
+                );
+            }
+            Ok(())
+        }
         Some(Cmd::Todo {
             text,
             session,
@@ -173,7 +242,22 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Some(Cmd::Attach { ratio, force }) => attach(ratio, force),
+        Some(Cmd::Attach {
+            ratio,
+            force,
+            backend,
+            session,
+            cwd,
+        }) => match placement::resolve(backend)? {
+            placement::Backend::Herdr => attach(ratio, force, cli.no_model),
+            backend => placement::attach(
+                backend,
+                session.or(cli.session),
+                cwd.as_deref().or(cli.cwd.as_deref()),
+                ratio,
+                cli.no_model,
+            ),
+        },
         Some(Cmd::Summarize { session }) => {
             if cli.no_model {
                 bail!("model calls disabled by --no-model or config.json");
@@ -200,6 +284,21 @@ fn hook_main() -> Result<()> {
     let mut input = String::new();
     let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut input);
     let hook_input: serde_json::Value = serde_json::from_str(&input).unwrap_or_default();
+    if std::env::var_os("GLANCE_SUMMARY_HELPER").is_some() {
+        return Ok(());
+    }
+    if hook_input["agent_id"].as_str().is_some() {
+        return Ok(());
+    }
+    if matches!(
+        hook_input["hook_event_name"].as_str(),
+        Some("Stop" | "StopFailure")
+    ) {
+        if let Err(e) = signals::record(&hook_input) {
+            hook_log(&format!("turn-end signal failed: {e}"));
+        }
+        return Ok(());
+    }
     let decision = if hook_input
         .get("agent_id")
         .and_then(serde_json::Value::as_str)
@@ -211,7 +310,7 @@ fn hook_main() -> Result<()> {
     } else if print_mode_ancestor().is_some() {
         "skip: print mode".to_string()
     } else {
-        match attach(0.3, false) {
+        match attach(0.3, false, false) {
             Ok(()) => "attach: ok".to_string(),
             Err(e) => format!("attach failed: {e}"),
         }
@@ -263,10 +362,32 @@ fn print_mode_ancestor() -> Option<String> {
 
 #[cfg(not(unix))]
 fn print_mode_ancestor() -> Option<String> {
-    None
+    use std::process::{Command, Stdio};
+    let script = r#"$walkId = [uint32]$env:GLANCE_PARENT_PID
+for ($hop = 0; $hop -lt 8 -and $walkId -gt 0; $hop++) {
+  $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$walkId" -ErrorAction Stop
+  if ($null -eq $proc) { break }
+  if ($proc.Name -match '^claude(\.exe)?$' -or ($proc.Name -eq 'node.exe' -and $proc.CommandLine -match 'claude')) {
+    if ($proc.CommandLine -match '(?:^|\s)(?:-p|--print)(?:\s|$)') { 'print' } else { 'interactive' }
+    exit 0
+  }
+  $walkId = [uint32]$proc.ParentProcessId
+}
+'unknown'
+"#;
+    let mut cmd = Command::new("powershell.exe");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .env("GLANCE_PARENT_PID", std::process::id().to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    match summary::run_process(&mut cmd, vec![], Duration::from_secs(5)) {
+        Ok(output) if output.trim() == "interactive" => None,
+        _ => Some("print mode or undetermined ancestor".into()),
+    }
 }
 
-fn attach(ratio: f64, force: bool) -> Result<()> {
+fn attach(ratio: f64, force: bool, no_model: bool) -> Result<()> {
     if !ratio.is_finite() || ratio <= 0.0 || ratio >= 1.0 {
         bail!("ratio must be greater than 0 and less than 1");
     }
@@ -274,11 +395,6 @@ fn attach(ratio: f64, force: bool) -> Result<()> {
         .context("HERDR_PANE_ID not set; run this inside a herdr pane")?;
     let client = herdr::Client::from_env().ok_or_else(|| anyhow!("herdr socket not found"))?;
     let exe = std::env::current_exe()?.to_string_lossy().to_string();
-    let command = format!(
-        "{} --pane {}",
-        shell_words::quote(&exe),
-        shell_words::quote(&pane)
-    );
     let others: Vec<String> = client
         .tab_panes(&pane)?
         .into_iter()
@@ -310,7 +426,7 @@ fn attach(ratio: f64, force: bool) -> Result<()> {
             herdr::split_right(&pane, 1.0 - ratio, &cwd)?
         }
     };
-    start_in_pane(&client, &target, &command)?;
+    start_in_pane(&client, &target, &exe, &pane, no_model)?;
     println!("glance: panel started in pane {target}");
     Ok(())
 }
@@ -330,13 +446,30 @@ fn is_idle_shell(names: &[String]) -> bool {
         && names.iter().all(|n| {
             matches!(
                 n.trim_start_matches('-'),
-                "zsh" | "bash" | "fish" | "sh" | "nu" | "login"
+                "zsh"
+                    | "bash"
+                    | "fish"
+                    | "sh"
+                    | "nu"
+                    | "login"
+                    | "pwsh"
+                    | "pwsh.exe"
+                    | "powershell"
+                    | "powershell.exe"
+                    | "cmd"
+                    | "cmd.exe"
             )
         })
 }
 
 /// Wait for the pane's shell prompt, type the command, and confirm glance came up (one retry).
-fn start_in_pane(client: &herdr::Client, pane: &str, command: &str) -> Result<()> {
+fn start_in_pane(
+    client: &herdr::Client,
+    pane: &str,
+    exe: &str,
+    agent_pane: &str,
+    no_model: bool,
+) -> Result<()> {
     let ready_by = Instant::now() + Duration::from_secs(15);
     while Instant::now() < ready_by {
         if is_idle_shell(&client.foreground_names(pane).unwrap_or_default()) {
@@ -348,10 +481,19 @@ fn start_in_pane(client: &herdr::Client, pane: &str, command: &str) -> Result<()
         bail!("pane {pane} did not become an idle shell");
     }
     for _ in 0..2 {
-        if !is_idle_shell(&client.foreground_names(pane).unwrap_or_default()) {
+        let names = client.foreground_names(pane).unwrap_or_default();
+        if !is_idle_shell(&names) {
             bail!("pane {pane} is no longer an idle shell");
         }
-        herdr::run_in_pane(pane, command)?;
+        let mut command = placement::shell_command(
+            exe,
+            agent_pane,
+            names.first().map(String::as_str).unwrap_or("sh"),
+        )?;
+        if no_model {
+            command.push_str(" --no-model");
+        }
+        herdr::run_in_pane(pane, &command)?;
         let up_by = Instant::now() + Duration::from_secs(5);
         while Instant::now() < up_by {
             thread::sleep(Duration::from_millis(250));
@@ -514,6 +656,8 @@ struct App {
     generation: u64,
     refresh_seconds: u64,
     last_summary_started: Option<Instant>,
+    sidebar: bool,
+    last_metadata: Option<Instant>,
     dirty: bool,
     last_growth: Option<Instant>,
     error: Option<String>,
@@ -669,6 +813,10 @@ fn run(cli: Cli) -> Result<()> {
     let mut agent_cwd: Option<String> = None;
     let session_id = if let Some(s) = cli.session {
         s
+    } else if let Some(cwd) = cli.cwd {
+        discovery::pick(Some(&cwd), None, true)?
+    } else if client.is_none() {
+        discovery::pick(None, None, false)?
     } else {
         let client = client
             .as_ref()
@@ -722,6 +870,8 @@ fn run(cli: Cli) -> Result<()> {
         generation: 0,
         refresh_seconds: cli.refresh_seconds.unwrap_or(30),
         last_summary_started: None,
+        sidebar: cli.sidebar,
+        last_metadata: None,
         dirty: true,
         last_growth: Some(Instant::now() - Duration::from_secs(10)),
         error: None,
@@ -841,16 +991,25 @@ type Term = ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout
 
 fn init_terminal() -> Result<Term> {
     enable_raw_mode()?;
-    stdout().execute(EnterAlternateScreen)?;
-    stdout().execute(EnableMouseCapture)?;
+    if let Err(e) = stdout()
+        .execute(EnterAlternateScreen)
+        .and_then(|out| out.execute(EnableMouseCapture))
+    {
+        restore_terminal();
+        return Err(e.into());
+    }
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore_terminal();
         default_hook(info);
     }));
-    Ok(ratatui::Terminal::new(
-        ratatui::backend::CrosstermBackend::new(stdout()),
-    )?)
+    match ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(stdout())) {
+        Ok(terminal) => Ok(terminal),
+        Err(e) => {
+            restore_terminal();
+            Err(e.into())
+        }
+    }
 }
 
 fn restore_terminal() {
@@ -1072,6 +1231,20 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
             app.scroll = 0;
         }
         maybe_summarize(app);
+        if app.sidebar
+            && app
+                .last_metadata
+                .is_none_or(|t| t.elapsed() >= Duration::from_secs(30))
+        {
+            if let (Some(client), Some(pane)) = (app.client.clone(), app.pane.clone()) {
+                let session = app.session_id.clone();
+                let summary = app.cache.summary.clone();
+                thread::spawn(move || {
+                    let _ = client.report_glance(&pane, &session, &summary);
+                });
+                app.last_metadata = Some(Instant::now());
+            }
+        }
         draw(app, terminal)?;
     }
 }
@@ -1123,6 +1296,7 @@ fn follow_session_change(app: &mut App) {
     app.generation = app.generation.wrapping_add(1);
     app.analyzing = false;
     app.last_summary_started = None;
+    app.last_metadata = None;
     app.pinned = false;
     app.focus_override = None;
     app.dirty = true;
@@ -1153,7 +1327,8 @@ fn maybe_summarize(app: &mut App) {
     let settled = app
         .last_growth
         .map(|t| t.elapsed() >= Duration::from_secs(2))
-        .unwrap_or(true);
+        .unwrap_or(true)
+        || signals::matches(&app.session_id, &app.tr.path);
     if !settled {
         return;
     }
@@ -1236,6 +1411,8 @@ mod tests {
             generation: 2,
             refresh_seconds: 30,
             last_summary_started: None,
+            sidebar: false,
+            last_metadata: None,
             dirty: false,
             last_growth: None,
             error: None,

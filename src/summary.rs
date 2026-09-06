@@ -319,6 +319,7 @@ pub fn summarize(
         new_turns
     );
     let mut cmd = Command::new("claude");
+    cmd.env("GLANCE_SUMMARY_HELPER", "1");
     let model = model();
     cmd.args(["-p", "--output-format", "json", "--model", &model])
         .arg("--json-schema")
@@ -367,7 +368,7 @@ pub fn summarize(
 }
 
 /// Drain both pipes while the child runs, including while it consumes stdin.
-fn run_process(cmd: &mut Command, input: Vec<u8>, timeout: Duration) -> Result<String> {
+pub(crate) fn run_process(cmd: &mut Command, input: Vec<u8>, timeout: Duration) -> Result<String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

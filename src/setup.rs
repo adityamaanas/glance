@@ -18,6 +18,8 @@ pub struct Config {
     #[serde(default)]
     pub no_model: bool,
     pub cache_retention_days: Option<u64>,
+    #[serde(default)]
+    pub sidebar_metadata: bool,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
 }
@@ -82,15 +84,21 @@ fn is_glance_entry(entry: &Value) -> bool {
     entry
         .get("hooks")
         .and_then(Value::as_array)
-        .map(|hs| {
-            hs.iter().any(|h| {
-                h.get("command")
-                    .and_then(Value::as_str)
-                    .map(is_glance_command)
-                    .unwrap_or(false)
-            })
-        })
+        .map(|hs| hs.iter().any(is_glance_hook))
         .unwrap_or(false)
+}
+
+fn is_glance_hook(hook: &Value) -> bool {
+    let Some(command) = hook.get("command").and_then(Value::as_str) else {
+        return false;
+    };
+    if let Some(args) = hook.get("args").and_then(Value::as_array) {
+        let name = command.rsplit(['/', '\\']).next().unwrap_or(command);
+        matches!(name, "glance" | "glance-panel" | "glance-panel.exe")
+            && args.first().and_then(Value::as_str) == Some("hook")
+    } else {
+        is_glance_command(command)
+    }
 }
 
 fn is_glance_command(command: &str) -> bool {
@@ -114,13 +122,7 @@ fn remove_glance_hooks(list: &mut Vec<Value>) {
         let Some(hooks) = entry.get_mut("hooks").and_then(Value::as_array_mut) else {
             return true;
         };
-        hooks.retain(|hook| {
-            !hook
-                .get("command")
-                .and_then(Value::as_str)
-                .map(is_glance_command)
-                .unwrap_or(false)
-        });
+        hooks.retain(|hook| !is_glance_hook(hook));
         !hooks.is_empty()
     });
 }
@@ -161,37 +163,43 @@ pub fn install_hook() -> Result<String> {
     let hooks = hooks
         .as_object_mut()
         .ok_or_else(|| anyhow!("settings.hooks is not an object"))?;
-    let list = hooks.entry("SessionStart").or_insert_with(|| json!([]));
-    let list = list
-        .as_array_mut()
-        .ok_or_else(|| anyhow!("settings.hooks.SessionStart is not an array"))?;
-    remove_glance_hooks(list);
-    let command = format!("{} hook", shell_words::quote(&exe));
-    list.push(json!({
-        "matcher": MATCHER,
-        "hooks": [{ "type": "command", "command": command, "timeout": 20 }]
-    }));
+    for event in ["SessionStart", "Stop", "StopFailure"] {
+        let list = hooks
+            .entry(event)
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .ok_or_else(|| anyhow!("settings.hooks.{event} is not an array"))?;
+        remove_glance_hooks(list);
+        let mut entry =
+            json!({"hooks":[{"type":"command","command":exe,"args":["hook"],"timeout":20}]});
+        if event == "SessionStart" {
+            entry["matcher"] = json!(MATCHER);
+        }
+        list.push(entry);
+    }
     write_settings(&settings)?;
     // Retire the shell-script version if it is still around.
     if let Ok(dir) = crate::transcript::claude_dir() {
         let _ = std::fs::remove_file(dir.join("hooks/glance-attach.sh"));
     }
     Ok(format!(
-        "SessionStart hook registered in {} ({command})",
+        "SessionStart, Stop and StopFailure hooks registered in {}",
         settings_path()?.display()
     ))
 }
 
 pub fn uninstall_hook() -> Result<String> {
     let mut settings = read_settings()?;
-    if let Some(list) = settings
-        .pointer_mut("/hooks/SessionStart")
-        .and_then(Value::as_array_mut)
-    {
-        remove_glance_hooks(list);
+    for event in ["SessionStart", "Stop", "StopFailure"] {
+        if let Some(list) = settings
+            .pointer_mut(&format!("/hooks/{event}"))
+            .and_then(Value::as_array_mut)
+        {
+            remove_glance_hooks(list);
+        }
     }
     write_settings(&settings)?;
-    Ok("glance SessionStart hook removed".to_string())
+    Ok("glance session and turn-end hooks removed".to_string())
 }
 
 /// True when the panel should show the one-time offer banner.

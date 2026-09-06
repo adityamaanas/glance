@@ -22,11 +22,39 @@ pub struct AgentInfo {
     pub cwd: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct Client {
     path: PathBuf,
 }
 
 impl Client {
+    pub fn report_glance(
+        &self,
+        pane: &str,
+        session: &str,
+        summary: &crate::summary::Summary,
+    ) -> Result<()> {
+        if self
+            .agent_get(pane)?
+            .agent_session
+            .as_ref()
+            .map(|s| s.value.as_str())
+            != Some(session)
+        {
+            return Ok(());
+        }
+        let done = summary.plan.iter().filter(|p| p.status == "done").count();
+        self.call(
+            "pane.report_metadata",
+            json!({
+                "pane_id":pane,"source":"glance:panel","tokens":{
+                    "step":crate::transcript::clip(&summary.now, 80),
+                    "progress":format!("{done}/{}", summary.plan.len())
+                },"ttl_ms":90000
+            }),
+        )?;
+        Ok(())
+    }
     /// Socket from HERDR_SOCKET_PATH, else the default location if it exists.
     pub fn from_env() -> Option<Client> {
         if let Ok(p) = std::env::var("HERDR_SOCKET_PATH") {

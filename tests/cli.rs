@@ -1,6 +1,68 @@
 use std::process::Command;
 
 #[test]
+fn setup_is_idempotent_preserves_other_hooks_and_stop_records_no_text() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("claude");
+    std::fs::create_dir_all(&config).unwrap();
+    let settings = config.join("settings.json");
+    let unrelated = serde_json::json!({"type":"command","command":"echo keep"});
+    std::fs::write(
+        &settings,
+        serde_json::json!({"theme":"dark","hooks":{"Stop":[{"hooks":[unrelated.clone()]}]}})
+            .to_string(),
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_glance-panel"))
+            .env("GLANCE_HOME", dir.path().join("state"))
+            .env("CLAUDE_CONFIG_DIR", &config)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+    run(&["setup", "--yes"]);
+    let first = std::fs::read(&settings).unwrap();
+    run(&["setup"]);
+    assert_eq!(first, std::fs::read(&settings).unwrap());
+    let value: serde_json::Value = serde_json::from_slice(&first).unwrap();
+    assert_eq!(
+        value["hooks"]["SessionStart"][0]["hooks"][0]["args"],
+        serde_json::json!(["hook"])
+    );
+    assert_eq!(value["hooks"]["Stop"].as_array().unwrap().len(), 2);
+    let transcript = dir.path().join("session.jsonl");
+    std::fs::write(&transcript, "{}\n").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_glance-panel"))
+        .env("GLANCE_HOME", dir.path().join("state"))
+        .env("CLAUDE_CONFIG_DIR", &config)
+        .arg("hook")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(serde_json::json!({"hook_event_name":"Stop","session_id":"session","transcript_path":transcript,"last_assistant_message":"private words"}).to_string().as_bytes()).unwrap();
+    assert!(child.wait_with_output().unwrap().status.success());
+    let marker = std::fs::read_to_string(dir.path().join("state/session.stop")).unwrap();
+    assert!(!marker.contains("private words"));
+    run(&["setup", "--remove"]);
+    let value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&settings).unwrap()).unwrap();
+    assert_eq!(value["theme"], "dark");
+    assert_eq!(
+        value["hooks"]["Stop"],
+        serde_json::json!([{"hooks":[unrelated]}])
+    );
+}
+
+#[test]
 fn todo_cli_preserves_wording_and_requires_explicit_carry() {
     let dir = tempfile::tempdir().unwrap();
     let run = |args: &[&str]| {
