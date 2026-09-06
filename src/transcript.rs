@@ -305,7 +305,7 @@ impl Transcript {
         for (i, t) in self.turns.iter().enumerate().skip(from) {
             let mut line = match t {
                 Turn::User(s) => format!("[t{i}] USER: {}\n\n", clip(s, 2000)),
-                Turn::Assistant(s) => format!("[t{i}] CLAUDE: {}\n\n", clip(s, 2000)),
+                Turn::Assistant(s) => format!("[t{i}] ASSISTANT: {}\n\n", clip(s, 2000)),
                 Turn::Tool(s) => format!("[t{i}] TOOL: {}\n", clip(s, 1500)),
             };
             if !out.is_empty() && out.len() + line.len() > budget {
@@ -527,7 +527,7 @@ mod tests {
         ]);
         let (out, end) = tr.render_chunk(1, 10_000);
         assert_eq!(end, 3);
-        assert!(out.starts_with("[t1] CLAUDE: two"));
+        assert!(out.starts_with("[t1] ASSISTANT: two"));
         assert!(out.contains("[t2] USER: three"));
         assert!(!out.contains("[t0]"));
     }

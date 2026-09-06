@@ -13,6 +13,10 @@ pub struct Config {
     #[serde(default)]
     pub hook_offer: Option<String>,
     pub model: Option<String>,
+    pub summary_harness: Option<crate::harness::Kind>,
+    pub summary_fallback: Option<crate::harness::Kind>,
+    #[serde(default)]
+    pub summary_models: std::collections::BTreeMap<String, String>,
     pub refresh_seconds: Option<u64>,
     pub prompt: Option<String>,
     #[serde(default)]

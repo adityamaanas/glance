@@ -6,40 +6,51 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(all(test, unix))]
+use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_MODEL: &str = "claude-sonnet-5";
 
-/// Model for the summary pass: `GLANCE_MODEL` if set, else the default.
-pub fn model() -> String {
-    OPTIONS
-        .get()
-        .map(|o| o.0.clone())
-        .unwrap_or_else(|| resolve_model(None, std::env::var("GLANCE_MODEL").ok().as_deref(), None))
+#[derive(Default)]
+struct Options {
+    model: Option<String>,
+    prompt: Option<String>,
+    harness: Option<crate::harness::Kind>,
+    fallback: Option<crate::harness::Kind>,
+    models: std::collections::BTreeMap<String, String>,
 }
+static OPTIONS: std::sync::OnceLock<Options> = std::sync::OnceLock::new();
 
-static OPTIONS: std::sync::OnceLock<(String, Option<String>)> = std::sync::OnceLock::new();
-
-fn resolve_model(cli: Option<&str>, env: Option<&str>, config: Option<&str>) -> String {
+fn resolve_model(cli: Option<&str>, env: Option<&str>, config: Option<&str>) -> Option<String> {
     [cli, env, config]
         .into_iter()
         .flatten()
         .map(str::trim)
         .find(|s| !s.is_empty())
-        .unwrap_or(DEFAULT_MODEL)
-        .to_string()
+        .map(str::to_string)
 }
 
-pub fn configure(cli: Option<&str>, config: &crate::setup::Config) {
+pub fn configure(
+    cli: Option<&str>,
+    harness: Option<crate::harness::Kind>,
+    fallback: Option<crate::harness::Kind>,
+    config: &crate::setup::Config,
+) {
     let model = resolve_model(
         cli,
         std::env::var("GLANCE_MODEL").ok().as_deref(),
         config.model.as_deref(),
     );
-    let _ = OPTIONS.set((model, config.prompt.clone()));
+    let _ = OPTIONS.set(Options {
+        model,
+        prompt: config.prompt.clone(),
+        harness: harness.or(config.summary_harness),
+        fallback: fallback.or(config.summary_fallback),
+        models: config.summary_models.clone(),
+    });
 }
-const TIMEOUT: Duration = Duration::from_secs(150);
 const MAX_NEW_CHARS: usize = 60_000;
 
 pub const CACHE_VERSION: u32 = 4;
@@ -83,6 +94,8 @@ pub struct Item {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct Summary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
     #[serde(default)]
     pub topline: String,
     #[serde(default)]
@@ -261,6 +274,7 @@ Every text at most 90 characters. Plain words, no markdown. Never invent facts n
 
 /// Run Sonnet over the new turns and return the updated summary.
 pub fn summarize(
+    kind: crate::harness::Kind,
     prev: &Summary,
     new_turns: &str,
     title: Option<&str>,
@@ -318,43 +332,31 @@ pub fn summarize(
         serde_json::to_string(todos)?,
         new_turns
     );
-    let mut cmd = Command::new("claude");
-    cmd.env("GLANCE_SUMMARY_HELPER", "1");
-    let model = model();
-    cmd.args(["-p", "--output-format", "json", "--model", &model])
-        .arg("--json-schema")
-        .arg(schema.to_string())
-        .args([
-            "--append-system-prompt",
-            &format!(
-                "{SYSTEM}\nEvery item needs a stable id, source_turns containing the absolute turn indices that support it, and from (the id of the step or question it follows from, or null). Reuse prior IDs. Do not invent evidence or relationships; use an empty source list when unknown.\n{}",
-                OPTIONS.get().and_then(|o| o.1.as_deref()).unwrap_or("")
-            ),
-        ])
-        .args([
-            "--no-session-persistence",
-            "--tools",
-            "",
-            "--setting-sources",
-            "",
-        ])
-        .current_dir(state_dir()?)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    // Do not let herdr register the helper process as an agent in the panel's pane.
-    for key in [
-        "HERDR_ENV",
-        "HERDR_PANE_ID",
-        "HERDR_TAB_ID",
-        "HERDR_WORKSPACE_ID",
-        "HERDR_SOCKET_PATH",
-        "HERDR_BIN_PATH",
-    ] {
-        cmd.env_remove(key);
-    }
-    let stdout = run_process(&mut cmd, prompt.into_bytes(), TIMEOUT)?;
-    let mut summary = parse_response(&stdout)?;
+    let options = OPTIONS.get_or_init(Options::default);
+    let wanted = options.harness.unwrap_or(kind);
+    let (provider, executable) = crate::providers::select(wanted, options.fallback)?;
+    let model = options
+        .model
+        .as_deref()
+        .or_else(|| options.models.get(provider.name()).map(String::as_str))
+        .filter(|s| !s.trim().is_empty())
+        .or(if provider == crate::harness::Kind::Claude {
+            Some(DEFAULT_MODEL)
+        } else {
+            None
+        });
+    let system = format!(
+        "{SYSTEM}\nEvery item needs a stable id, source_turns containing the absolute turn indices that support it, and from (the id of the step or question it follows from, or null). Reuse prior IDs. Do not invent evidence or relationships; use an empty source list when unknown.\n{}",
+        options.prompt.as_deref().unwrap_or("")
+    );
+    let mut summary =
+        crate::providers::prepare(provider, &executable, model, &system, &prompt, &schema)?
+            .run(provider)?;
+    summary.backend = Some(format!(
+        "{}/{}",
+        provider.name(),
+        model.unwrap_or("default")
+    ));
     if let Some(usage) = &mut summary.usage {
         usage.calls += prev.usage.as_ref().map(|u| u.calls).unwrap_or(0);
         if let (Some(current), Some(previous)) = (
@@ -456,7 +458,7 @@ fn read_output(mut pipe: impl Read) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&kept).into_owned())
 }
 
-fn parse_response(stdout: &str) -> Result<Summary> {
+pub(crate) fn parse_response(stdout: &str) -> Result<Summary> {
     let envelope: Value =
         serde_json::from_str(stdout.trim()).context("parse claude -p envelope")?;
     if envelope
@@ -697,9 +699,18 @@ mod tests {
 
     #[test]
     fn model_override_from_env() {
-        assert_eq!(resolve_model(None, None, None), DEFAULT_MODEL);
-        assert_eq!(resolve_model(Some("cli"), Some("env"), Some("file")), "cli");
-        assert_eq!(resolve_model(Some(" "), Some("env"), Some("file")), "env");
-        assert_eq!(resolve_model(None, None, Some("file")), "file");
+        assert_eq!(resolve_model(None, None, None), None);
+        assert_eq!(
+            resolve_model(Some("cli"), Some("env"), Some("file")).as_deref(),
+            Some("cli")
+        );
+        assert_eq!(
+            resolve_model(Some(" "), Some("env"), Some("file")).as_deref(),
+            Some("env")
+        );
+        assert_eq!(
+            resolve_model(None, None, Some("file")).as_deref(),
+            Some("file")
+        );
     }
 }

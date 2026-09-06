@@ -7,6 +7,7 @@ mod harness;
 mod herdr;
 mod opencode;
 mod placement;
+mod providers;
 mod setup;
 mod signals;
 mod summary;
@@ -57,7 +58,7 @@ struct Cli {
     #[arg(long, global = true)]
     transcript: Option<std::path::PathBuf>,
     /// Never call the model; show free fields and the cached summary only.
-    #[arg(long)]
+    #[arg(long, global = true)]
     no_model: bool,
     /// Report the current step and progress to herdr's sidebar.
     #[arg(long)]
@@ -65,6 +66,12 @@ struct Cli {
     /// Summary model (overrides GLANCE_MODEL and config.json).
     #[arg(long, global = true)]
     model: Option<String>,
+    /// Agent CLI used for summaries (default: the transcript's agent).
+    #[arg(long, global = true, value_enum)]
+    summary_harness: Option<harness::Kind>,
+    /// Alternate CLI, used only when the selected summary executable is absent.
+    #[arg(long, global = true, value_enum)]
+    summary_fallback: Option<harness::Kind>,
     /// Minimum seconds between summary calls (default 30).
     #[arg(long, global = true)]
     refresh_seconds: Option<u64>,
@@ -196,10 +203,16 @@ fn main() -> Result<()> {
     } else {
         setup::read_config()?
     };
-    summary::configure(cli.model.as_deref(), &cfg);
+    summary::configure(
+        cli.model.as_deref(),
+        cli.summary_harness,
+        cli.summary_fallback,
+        &cfg,
+    );
     cli.no_model |= cfg.no_model;
     cli.sidebar |= cfg.sidebar_metadata;
     cli.refresh_seconds = cli.refresh_seconds.or(cfg.refresh_seconds);
+    let panel_args = panel_args(&cli)?;
     let source = Source {
         kind: cli.harness.unwrap_or_default(),
         path: cli.transcript.as_deref(),
@@ -307,7 +320,7 @@ fn main() -> Result<()> {
             session,
             cwd,
         }) => match placement::resolve(backend)? {
-            placement::Backend::Herdr => attach(ratio, force, cli.no_model),
+            placement::Backend::Herdr => attach(ratio, force, cli.no_model, &panel_args),
             backend => placement::attach(
                 backend,
                 session.or(cli.session),
@@ -315,6 +328,7 @@ fn main() -> Result<()> {
                 ratio,
                 cli.no_model,
                 source.kind,
+                &panel_args,
             ),
         },
         Some(Cmd::Summarize { session }) => {
@@ -369,7 +383,7 @@ fn hook_main() -> Result<()> {
     } else if print_mode_ancestor().is_some() {
         "skip: print mode".to_string()
     } else {
-        match attach(0.3, false, false) {
+        match attach(0.3, false, false, &[]) {
             Ok(()) => "attach: ok".to_string(),
             Err(e) => format!("attach failed: {e}"),
         }
@@ -446,7 +460,36 @@ for ($hop = 0; $hop -lt 8 -and $walkId -gt 0; $hop++) {
     }
 }
 
-fn attach(ratio: f64, force: bool, no_model: bool) -> Result<()> {
+fn panel_args(cli: &Cli) -> Result<Vec<std::ffi::OsString>> {
+    let mut args = Vec::new();
+    for (flag, kind) in [
+        ("--harness", cli.harness),
+        ("--summary-harness", cli.summary_harness),
+        ("--summary-fallback", cli.summary_fallback),
+    ] {
+        if let Some(kind) = kind {
+            args.extend([flag.into(), kind.name().into()]);
+        }
+    }
+    if let Some(path) = &cli.transcript {
+        args.extend([
+            "--transcript".into(),
+            std::path::absolute(path)?.into_os_string(),
+        ]);
+    }
+    if let Some(model) = &cli.model {
+        args.extend(["--model".into(), model.into()]);
+    }
+    if let Some(seconds) = cli.refresh_seconds {
+        args.extend(["--refresh-seconds".into(), seconds.to_string().into()]);
+    }
+    if cli.sidebar {
+        args.push("--sidebar".into());
+    }
+    Ok(args)
+}
+
+fn attach(ratio: f64, force: bool, no_model: bool, extra: &[std::ffi::OsString]) -> Result<()> {
     if !ratio.is_finite() || ratio <= 0.0 || ratio >= 1.0 {
         bail!("ratio must be greater than 0 and less than 1");
     }
@@ -485,7 +528,7 @@ fn attach(ratio: f64, force: bool, no_model: bool) -> Result<()> {
             herdr::split_right(&pane, 1.0 - ratio, &cwd)?
         }
     };
-    start_in_pane(&client, &target, &exe, &pane, no_model)?;
+    start_in_pane(&client, &target, &exe, &pane, no_model, extra)?;
     println!("glance: panel started in pane {target}");
     Ok(())
 }
@@ -528,6 +571,7 @@ fn start_in_pane(
     exe: &str,
     agent_pane: &str,
     no_model: bool,
+    extra: &[std::ffi::OsString],
 ) -> Result<()> {
     let ready_by = Instant::now() + Duration::from_secs(15);
     while Instant::now() < ready_by {
@@ -552,6 +596,11 @@ fn start_in_pane(
         if no_model {
             command.push_str(" --no-model");
         }
+        placement::append_shell_args(
+            &mut command,
+            names.first().map(String::as_str).unwrap_or("sh"),
+            extra,
+        )?;
         herdr::run_in_pane(pane, &command)?;
         let up_by = Instant::now() + Duration::from_secs(5);
         while Instant::now() < up_by {
@@ -588,7 +637,13 @@ fn summarize_once(session: &str, source: Source) -> Result<()> {
         );
         let todo_path = todos::path(&key)?;
         let snapshot = todos::load(&todo_path)?;
-        s = summary::summarize(&s, &text, tr.free.title.as_deref(), &snapshot.items)?;
+        s = summary::summarize(
+            source.kind,
+            &s,
+            &text,
+            tr.free.title.as_deref(),
+            &snapshot.items,
+        )?;
         if !s.todo_updates.is_empty() {
             todos::edit(&todo_path, |store| {
                 store.apply(&snapshot.items, &s.todo_updates, &tr, end);
@@ -603,11 +658,11 @@ fn summarize_once(session: &str, source: Source) -> Result<()> {
     // Seed the cache so a panel opened on this session starts from this pass.
     let cache = Cache {
         version: summary::CACHE_VERSION,
+        source: s.backend.clone().unwrap_or_else(|| "heuristic".into()),
         summary: s,
         turns_done: tr.turns.len(),
         fingerprint: tr.fingerprint(tr.turns.len()),
         updated_at: summary::now_secs(),
-        source: summary::model(),
     };
     summary::save_cache(&key, &cache)?;
     Ok(())
@@ -833,11 +888,14 @@ impl App {
                 evidence::normalize(&mut summary, turns_done);
                 self.cache = Cache {
                     version: summary::CACHE_VERSION,
+                    source: summary
+                        .backend
+                        .clone()
+                        .unwrap_or_else(|| "heuristic".into()),
                     summary,
                     turns_done,
                     fingerprint: self.tr.fingerprint(turns_done),
                     updated_at: summary::now_secs(),
-                    source: summary::model(),
                 };
                 self.error = None;
                 self.dirty |= turns_done < self.tr.turns.len();
@@ -1459,11 +1517,12 @@ fn maybe_summarize(app: &mut App) {
         }
     };
     let tx = app.tx.clone();
+    let kind = app.tr.harness;
     app.analyzing = true;
     app.last_summary_started = Some(Instant::now());
     app.dirty = false;
     thread::spawn(move || {
-        let result = summary::summarize(&prev, &text, title.as_deref(), &snapshot);
+        let result = summary::summarize(kind, &prev, &text, title.as_deref(), &snapshot);
         let _ = tx.send(Msg::Summary(
             Box::new(result),
             turns_done,
