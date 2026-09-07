@@ -1,6 +1,6 @@
 # Security reporting
 
-Glance handles local conversation content and can register a command in Claude Code's settings. Reports involving unintended disclosure, unsafe command execution, or destructive settings changes are especially useful.
+Glance handles local conversation content, invokes summary-provider CLIs, and can register Claude Code and Cursor hooks. Reports involving unintended disclosure, unsafe command execution, or destructive settings changes are especially useful.
 
 Use [GitHub private vulnerability reporting](https://github.com/adityamaanas/glance/security/advisories/new) when available. If unavailable, open an issue requesting a private contact channel **without vulnerability details or sensitive data**.
 

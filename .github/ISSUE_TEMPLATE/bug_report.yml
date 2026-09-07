@@ -9,7 +9,7 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: OS, Glance version or commit, Claude Code version, herdr version, and terminal.
+      description: OS, Glance version or commit, agent CLI/IDE version, selected summary provider, and terminal or multiplexer version.
     validations:
       required: true
   - type: textarea
