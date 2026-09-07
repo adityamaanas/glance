@@ -2,30 +2,64 @@
 
 [← Home](../README.md) · [User guide](usage.md) · [Security reporting](../SECURITY.md)
 
-## What Glance reads
+## What Glance reads and captures
 
-Glance reads local Claude Code transcripts under `~/.claude/projects/`. In pane-following mode it also reads herdr session, process, and status metadata. It does not modify source transcripts.
+Glance reads local transcripts, exports and OpenCode's database without changing
+them. herdr integration reads pane/session/status metadata. Adapters select
+visible user, assistant and tool content and exclude recognized internal
+reasoning fields; this is not a secret-redaction system.
 
-## What goes to the summarizer
+Optional Cursor IDE hooks capture new visible events into Glance-owned files.
+`cursor-stream` captures CLI events while forwarding stdout. These routes do
+not automatically import historical IDE chats or read Cursor's private database.
+See [Cursor](cursor.md).
 
-With model updates enabled, Glance passes the session title, previous summary, and compact transcript text to a separate `claude -p` process. This can include code excerpts, paths, prompts, and other sensitive conversation content. It is not a redaction system.
+## What reaches a summary provider
 
-The helper requests no session persistence, no tools, and no settings sources, and removes known herdr integration variables. Authentication, model routing, and service-side handling depend on the installed Claude CLI and its environment. Glance does not implement its own telemetry or separate upload service.
+Model-enabled summaries send the title, previous summary, user todos and compact
+transcript excerpts to a separate agent CLI. Content may include code, paths,
+prompts, tool output and secrets present in the conversation.
 
-The prompt is currently a process argument: users with sufficient local process-inspection access may see it. Process input and isolation improvements are tracked in the checklist.
+The default provider matches the transcript's agent. `--summary-harness`
+changes it explicitly. Optional fallback applies only when the primary
+executable is absent; authentication, quota and runtime errors do not switch
+providers. Authentication, network routing and server retention follow the CLI
+and account.
 
-## Local storage
+Most providers receive conversation text through stdin. Cursor's print
+interface uses a process argument, so local process inspection can expose that
+prompt; oversized arguments fail with a clear error. Glance avoids logging
+ancestor prompt arguments and has no separate telemetry/upload service.
 
-Caches and preferences are saved under `~/.glance/`. Caches contain derived conversation content and should be treated as sensitive. Hook logs contain decisions and errors; print-mode detection may include an ancestor command line.
+Helpers use temporary directories outside the project and request provider
+specific tool restrictions. Claude, Codex and pi request ephemeral/no-session
+behavior; Gemini, OpenCode and Cursor may retain helper history under their own
+policies. These settings are not a universal OS security boundary. Read
+[summary providers](summary-providers.md) before selecting a provider.
 
-Installing or removing the hook writes `~/.claude/settings.json` after making a backup. Declining the offer saves the preference in Glance's configuration.
+## Local storage and sharing
 
-## Model-free use
+Caches, todos, preferences, logs and captured Cursor content live under
+`~/.glance/`, or `GLANCE_HOME`. Treat derived summaries and graph exports as
+sensitive conversation content. HTML exports embed excerpts and work offline.
+
+Explicit setup writes Claude/Cursor hook settings with backups and preserves
+unrelated registrations. Removal removes Glance-owned hooks. Errors can appear
+in local logs; sanitize logs before sharing them.
+
+## Model-free operation and cleanup
 
 ```sh
-glance-panel --session <session-id> --no-model
+glance-panel --harness codex --session <id> --no-model
+glance-panel cache-clean --older-than-days 30 --dry-run
 ```
 
-This disables summary invocations for that panel. It continues to read transcripts and cached summaries. The separate `summarize` command invokes the model.
+The global `--no-model` flag and config `no_model: true` prevent summary calls,
+including explicit `summarize`. They still allow local transcript/cache reads.
+Installed Cursor hooks continue capturing visible events until removed.
 
-To remove stored summaries, close the relevant panels and delete their cache files from `~/.glance/`. Run `glance-panel hook --uninstall` before removing the binary if you enabled automatic opening.
+Cache cleanup removes old summary caches and preserves configuration and todos.
+To remove captures/reminders, close their panels and remove the appropriate
+Glance-owned files deliberately. Run `setup --remove` and/or
+`setup --harness cursor --remove` before deleting the executable if hooks were
+installed.
