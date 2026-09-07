@@ -3,6 +3,7 @@
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use std::fs::File;
+use std::hash::{DefaultHasher, Hasher};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -36,7 +37,7 @@ pub struct Transcript {
     pub session_id: String,
     offset: u64,
     partial: Vec<u8>,
-    tail: Vec<u8>,
+    prefix_hash: DefaultHasher,
     pub revision: u64,
     pub free: Free,
     pub turns: Vec<Turn>,
@@ -107,7 +108,7 @@ impl Transcript {
             session_id: String::new(),
             offset: 0,
             partial: Vec::new(),
-            tail: Vec::new(),
+            prefix_hash: DefaultHasher::new(),
             revision: 0,
             free: Free::default(),
             turns: Vec::new(),
@@ -139,16 +140,26 @@ impl Transcript {
             Err(e) => return Err(e.into()),
         };
         let mut replaced = file.metadata()?.len() < self.offset;
-        if !replaced && !self.tail.is_empty() {
-            file.seek(SeekFrom::Start(self.offset - self.tail.len() as u64))?;
-            let mut tail = vec![0; self.tail.len()];
-            file.read_exact(&mut tail)?;
-            replaced = tail != self.tail;
+        if !replaced && self.offset != 0 {
+            // A transcript can be rewritten earlier while its length and last
+            // record stay unchanged. Verify all consumed bytes, including a
+            // partial line, before treating the new data as an append.
+            let mut previous = Read::by_ref(&mut file).take(self.offset);
+            let mut hash = DefaultHasher::new();
+            let mut buffer = [0; 8192];
+            loop {
+                let n = previous.read(&mut buffer)?;
+                if n == 0 {
+                    break;
+                }
+                hash.write(&buffer[..n]);
+            }
+            replaced = hash.finish() != self.prefix_hash.finish();
         }
         if replaced {
             self.offset = 0;
             self.partial.clear();
-            self.tail.clear();
+            self.prefix_hash = DefaultHasher::new();
             self.turns.clear();
             self.free = Free::default();
             self.revision = self.revision.wrapping_add(1);
@@ -164,6 +175,7 @@ impl Transcript {
                 break;
             }
             self.offset += n as u64;
+            self.prefix_hash.write(&buf);
             self.partial.extend_from_slice(&buf);
             if !buf.ends_with(b"\n") {
                 break;
@@ -173,11 +185,6 @@ impl Transcript {
                 self.ingest(&v);
             }
         }
-        let mut file = reader.into_inner();
-        let tail_len = self.offset.min(128) as usize;
-        file.seek(SeekFrom::Start(self.offset - tail_len as u64))?;
-        self.tail.resize(tail_len, 0);
-        file.read_exact(&mut self.tail)?;
         Ok(self.turns.len() - before)
     }
 
@@ -460,6 +467,33 @@ mod tests {
         tr.read_new().unwrap();
         assert!(matches!(&tr.turns[0], Turn::User(s) if s == "alt"));
         assert_eq!(tr.revision, 2);
+    }
+
+    #[test]
+    fn earlier_rewrite_with_identical_tail_invalidates_evidence() {
+        use std::io::Write;
+        let last = serde_json::json!({"type":"assistant","message":{"content":[{"type":"text","text":"unchanged".repeat(1200)}]}}).to_string();
+        let first = r#"{"type":"user","message":{"content":"old plan"}}"#;
+        let mut tr = tr_with(&[first, &last]);
+        let old = tr.fingerprint(tr.turns.len());
+        let replacement = first.replace("old plan", "new plan");
+        std::fs::write(&tr.path, format!("{replacement}\n{last}\n")).unwrap();
+        tr.read_new().unwrap();
+        assert_eq!(tr.revision, 1);
+        assert_ne!(old, tr.fingerprint(tr.turns.len()));
+        assert!(matches!(&tr.turns[0], Turn::User(s) if s == "new plan"));
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&tr.path)
+            .unwrap();
+        writeln!(file, "{first}").unwrap();
+        assert_eq!(tr.read_new().unwrap(), 1);
+        assert_eq!(
+            tr.revision, 1,
+            "a normal append must preserve the generation"
+        );
+        assert_eq!(tr.read_new().unwrap(), 0);
+        assert_eq!(tr.revision, 1);
     }
 
     #[test]
