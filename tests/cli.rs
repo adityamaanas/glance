@@ -1,5 +1,75 @@
 use std::process::Command;
 
+#[cfg(unix)]
+#[test]
+fn todos_infer_the_pane_agent_and_respect_explicit_harness() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    use std::time::{Duration, Instant};
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("herdr.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let server = std::thread::spawn(move || {
+        for _ in 0..3 {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            let mut connection = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "todo did not query herdr");
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            };
+            connection
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = String::new();
+            BufReader::new(&connection).read_line(&mut request).unwrap();
+            let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+            assert_eq!(request["method"], "agent.get");
+            writeln!(connection, "{}", serde_json::json!({"result":{"agent":{"agent_status":"idle","agent_session":{"agent":"codex","value":"same-id"}}}})).unwrap();
+        }
+    });
+    for (flags, expected_key) in [
+        (vec![], "codex--same-id"),
+        (vec!["--harness", "claude"], "same-id"),
+        (vec!["--harness", "gemini"], "gemini--same-id"),
+    ] {
+        let result = Command::new(env!("CARGO_BIN_EXE_glance-panel"))
+            .env("GLANCE_HOME", dir.path().join("state"))
+            .env("HERDR_SOCKET_PATH", &socket)
+            .env("HERDR_PANE_ID", "w1:p1")
+            .env("CLAUDE_CONFIG_DIR", dir.path().join("missing-claude"))
+            .env("CODEX_HOME", dir.path().join("missing-codex"))
+            .env("GLANCE_GEMINI_HOME", dir.path().join("missing-gemini"))
+            .args(flags)
+            .args(["todo", "Remember this agent"])
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(
+            dir.path()
+                .join("state")
+                .join(format!("{expected_key}.todos.json"))
+                .exists(),
+            "expected {expected_key}, got {:?}; stdout: {}",
+            std::fs::read_dir(dir.path().join("state"))
+                .unwrap()
+                .map(|p| p.unwrap().file_name())
+                .collect::<Vec<_>>(),
+            String::from_utf8_lossy(&result.stdout)
+        );
+    }
+    server.join().unwrap();
+}
+
 #[test]
 fn agent_fixtures_exclude_discarded_history_and_do_not_share_todos() {
     let dir = tempfile::tempdir().unwrap();

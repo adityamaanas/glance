@@ -215,6 +215,7 @@ fn main() -> Result<()> {
     let panel_args = panel_args(&cli)?;
     let source = Source {
         kind: cli.harness.unwrap_or_default(),
+        explicit_kind: cli.harness.is_some(),
         path: cli.transcript.as_deref(),
     };
     if cli.command.is_none() {
@@ -617,6 +618,7 @@ fn start_in_pane(
 #[derive(Clone, Copy)]
 struct Source<'a> {
     kind: harness::Kind,
+    explicit_kind: bool,
     path: Option<&'a std::path::Path>,
 }
 
@@ -674,7 +676,7 @@ fn todo_command(
     set: Option<(String, todos::Status)>,
     delete: Option<String>,
     carry: Option<String>,
-    source: Source,
+    mut source: Source,
 ) -> Result<()> {
     let session = match session {
         Some(id) => id,
@@ -682,11 +684,18 @@ fn todo_command(
             let client =
                 herdr::Client::from_env().context("pass todo --session <id> outside herdr")?;
             let pane = std::env::var("HERDR_PANE_ID").context("no herdr pane; pass --session")?;
-            client
+            let session = client
                 .agent_get(&pane)?
                 .agent_session
-                .context("pane has no session")?
-                .value
+                .context("pane has no session")?;
+            if !source.explicit_kind {
+                source.kind = session
+                    .agent
+                    .as_deref()
+                    .and_then(harness::Kind::parse)
+                    .unwrap_or_default();
+            }
+            session.value
         }
     };
     let key = source.kind.storage_key(&session);
