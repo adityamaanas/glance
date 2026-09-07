@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/readme/hero.svg" alt="glance — Pick up where you left off. A live orientation panel for your Claude Code session." width="960">
+<img src="assets/readme/hero.svg" alt="glance — Pick up where you left off. A live orientation panel for your coding-agent session." width="960">
 
 [![CI](https://github.com/adityamaanas/glance/actions/workflows/ci.yml/badge.svg)](https://github.com/adityamaanas/glance/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-76d8cc?labelColor=172c35)](LICENSE)
@@ -8,7 +8,7 @@
 
 **Your session, back in focus.**
 
-A live panel beside Claude Code: the goal, the current work, the plan, and the loose ends.
+A live panel beside your coding agent: the goal, the current work, the plan, and the loose ends.
 Come back after a break without rereading the conversation.
 
 [Quick start](#quick-start) · [User guide](docs/usage.md) · [How it works](docs/architecture.md) · [Roadmap](ROADMAP.md) · [Contribute](CONTRIBUTING.md)
@@ -28,12 +28,14 @@ Come back after a break without rereading the conversation.
 | **One stable goal.** Remember what the session is working toward. | **A living plan.** See completed steps, current work, and blockers. |
 | **The open loops.** Keep unanswered questions and decisions in view. | **Separate workstreams.** Focus on one thread or see the whole session. |
 | **A quick return.** Cached summaries appear when you reopen the panel. | **A second perspective.** Switch to the rail to see items arranged by workstream. |
+| **Check the evidence.** Open the transcript turns behind an item. | **Keep your own reminders.** Add todos whose wording stays yours. |
+| **See relationships.** Explore a graph or export it as offline HTML. | **Choose your agent.** Read Claude, Codex, Gemini, pi, OpenCode and Cursor conversations. |
 
-Glance reads the transcript Claude Code already writes. It does not edit that transcript or direct the agent's work. Model summaries run through a separate `claude -p` invocation on your configured Claude login.
+Glance reads local transcripts and exports; Cursor IDE can supply new events through optional hooks. Summaries run through a separate invocation of your selected agent CLI using its configured login. The default provider matches the transcript's agent. See the [compatibility matrix](docs/compatibility.md) for fixture coverage and live verification limits.
 
 ## Quick start
 
-**Currently supported:** macOS and Linux, Claude Code 2.1, and [herdr](https://herdr.dev) 0.8+ for automatic pane attachment. Claude Code must be installed and logged in. Building from source requires a current stable Rust toolchain. Windows and additional agents are [planned](ROADMAP.md).
+**Platforms:** Windows, macOS and Linux. Building from source requires Rust 1.88 or newer. Model summaries require an installed and authenticated agent CLI; `--no-model` works without one. [herdr](https://herdr.dev), tmux and Zellij provide automatic split placement, and manual splits work with a session ID.
 
 ```sh
 # Install from source
@@ -48,23 +50,30 @@ glance-panel attach
 
 In a running Claude Code conversation, use `! glance-panel attach` to run the command in that pane.
 
-The first panel offers to open automatically for future sessions. Accept with `y`, or decline with `n`. Change this later with `glance-panel hook --install` or `glance-panel hook --uninstall`.
+The first Claude panel offers hook setup. Accept with `y`, or decline with `n`. Change this later with `glance-panel setup` or `glance-panel setup --remove`. Cursor IDE setup is explicit: `glance-panel setup --harness cursor`.
 
 **Using another terminal?** Open your own split and follow a known session ID:
 
 ```sh
 glance-panel --session <session-id>
+glance-panel --harness codex --cwd /path/to/project
+glance-panel --harness cursor --session <conversation-id> --no-model
 ```
 
-Prebuilt binaries, Homebrew installation, and crates.io publication are planned. The installed binary is **`glance-panel`**.
+The installed binary is **`glance-panel`**. Release archives and installers are configured for five targets; download them when a release containing these changes is published. Homebrew tap publication and crates.io credentials require maintainer setup. See [distribution](docs/distribution.md).
 
 ## Small controls, useful context
 
 | Key | Action |
 | :--- | :--- |
 | `j` / `k` | Scroll down / up |
+| Up / Down | Select an item |
+| Enter / `e` | Open supporting transcript evidence |
 | `r` | Request another summary |
 | `v` | Toggle panel / rail view |
+| `g` | Toggle relationship graph |
+| `a` / `t` | Add a todo / select the todo list |
+| `x` / `d` | Toggle / delete the selected todo |
 | `[` / `]` | Move between workstreams |
 | `0` | Show all workstreams |
 | `p` | Toggle pinned focus / follow the conversation |
@@ -87,7 +96,7 @@ The rail arranges summary items by transcript turn and workstream. A workstream 
 - Versioned caches live in `~/.glance/`; a heuristic provides initial context when no cache exists.
 - `--no-model` displays metadata and cached context without starting a summary invocation.
 
-Summaries are interpretations and can be incomplete or wrong. Check the conversation for consequential details. Read [privacy and data handling](docs/privacy.md) for what is read, saved, and passed to Claude.
+Summaries are interpretations and can be incomplete or wrong. Use the evidence drawer to check the conversation. Read [privacy and data handling](docs/privacy.md) for what is read, saved, and passed to your summary provider.
 
 ## Find your way around
 
@@ -99,6 +108,12 @@ Summaries are interpretations and can be incomplete or wrong. Check the conversa
 | [Roadmap](ROADMAP.md) | Shipped capabilities and planned milestones |
 | [Implementation checklist](docs/implementation-checklist.md) | Detailed work plan and validation gates |
 | [Changelog](CHANGELOG.md) | Changes by version |
+| [Release notes](docs/release-notes.md) | Unreleased feature and reliability changes |
+| [Compatibility](docs/compatibility.md) | OS, terminal and agent validation coverage |
+| [Agent adapters](docs/agent-transcripts.md) | Discovery, formats and custom transcript paths |
+| [Cursor](docs/cursor.md) | IDE hooks, CLI capture and export workflows |
+| [Summary providers](docs/summary-providers.md) | Provider selection, models and helper restrictions |
+| [Distribution](docs/distribution.md) | Archives, installers and maintainer release steps |
 
 ## Contributing
 

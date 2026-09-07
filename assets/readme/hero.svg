@@ -18,7 +18,7 @@
     <text x="64" y="184" font-size="48" font-weight="650" letter-spacing="-1.8" fill="#eff7f2">Pick up where</text>
     <text x="64" y="241" font-size="48" font-weight="650" letter-spacing="-1.8" fill="#76d8cc">you left off.</text>
     <text x="66" y="292" font-size="19" fill="#afc4c8">A little context. Right beside your session.</text>
-    <text x="66" y="338" font-size="11" letter-spacing="2.2" fill="#83a4ad">CLAUDE CODE  /  TERMINAL  /  OPEN SOURCE</text>
+    <text x="66" y="338" font-size="11" letter-spacing="2.2" fill="#83a4ad">CODING AGENTS  /  TERMINAL  /  OPEN SOURCE</text>
   </g>
   <g transform="translate(738 56)">
     <rect width="398" height="270" rx="13" fill="#10252e" stroke="#36515b"/>
