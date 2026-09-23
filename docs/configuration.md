@@ -14,7 +14,7 @@ Glance reads `~/.glance/config.json`. Invalid configuration is reported on norma
 }
 ```
 
-- Model precedence: `--model`, `GLANCE_MODEL`, configuration file, built-in default.
+- Model precedence: `--model`, `summary_models[agent]`, then for Claude only `GLANCE_MODEL`, `model` in this file and the built-in default. See [summary providers](summary-providers.md).
 - `--refresh-seconds` overrides the configuration interval between summary calls. Growth must also settle and herdr must not report active work. `r` bypasses the interval for a manual refresh.
 - `no_model` or `--no-model` prevents model invocation, including the `summarize` command. The panel still reads local metadata and caches.
 - `prompt` appends instructions to Glance's summary prompt.
@@ -28,7 +28,7 @@ glance-panel cache-clean --older-than-days 90 --dry-run
 glance-panel cache-clean --older-than-days 90
 ```
 
-Long sessions are summarized in forward chunks. The processed cursor advances only over the turns included in each pass. Individual long messages are still clipped to keep each pass compact. The footer reports successful cached summary calls and the CLI's estimated USD cost when available; this is not a billing or subscription-limit meter, and failed calls are not counted.
+Long sessions are summarized in forward chunks. The processed cursor advances only over the turns included in each pass. Individual long messages are still clipped to keep each pass compact. The footer reports successful cached summary calls and the CLI's estimated USD cost when available; a trailing `+` means some calls reported no estimate, so the figure is a lower bound. This is not a billing or subscription-limit meter, and failed calls are not counted.
 
 ## Windows
 

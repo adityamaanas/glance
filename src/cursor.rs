@@ -109,8 +109,10 @@ pub fn setup(remove: bool) -> Result<String> {
             std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700))?;
         }
     }
-    if path.exists() {
-        std::fs::copy(&path, path.with_extension("json.bak-glance"))?;
+    // Keep the first backup: it is the only copy from before Glance changed the file.
+    let backup = path.with_extension("json.bak-glance");
+    if path.exists() && !backup.exists() {
+        std::fs::copy(&path, backup)?;
     }
     crate::setup::atomic_write(&path, serde_json::to_string_pretty(&value)?.as_bytes())?;
     Ok(format!(
@@ -256,13 +258,18 @@ pub fn hook(state: Option<&Path>) {
 }
 
 /// Import the documented complete-message CLI stream without reading Cursor's private database.
+///
+/// Forwarding comes first: every input byte reaches stdout before capture is attempted, and
+/// a capture problem is reported on stderr without interrupting the downstream pipeline.
 pub fn stream() -> Result<()> {
-    let state = crate::summary::state_dir()?;
     let stdin = std::io::stdin();
     let mut reader = stdin.lock();
-    let mut id: Option<String> = None;
-    let mut cwd = Value::Null;
-    let mut model = Value::Null;
+    let mut out = std::io::stdout().lock();
+    let mut capture = StreamCapture {
+        state: crate::summary::state_dir().ok(),
+        ..StreamCapture::default()
+    };
+    let mut oversized = false;
     loop {
         let mut bytes = Vec::new();
         Read::by_ref(&mut reader)
@@ -271,36 +278,85 @@ pub fn stream() -> Result<()> {
         if bytes.is_empty() {
             break;
         }
-        if bytes.len() as u64 > MAX_INPUT {
-            bail!("Cursor stream record exceeds 8 MiB");
+        out.write_all(&bytes)?;
+        out.flush()?;
+        let complete = bytes.ends_with(b"\n");
+        if oversized || bytes.len() as u64 > MAX_INPUT {
+            // Forward the rest of an oversized record untouched; capture resumes after it.
+            if !oversized {
+                capture.warn("Cursor stream record exceeds 8 MiB; not captured".into());
+            }
+            oversized = !complete;
+            continue;
         }
-        let v: Value = serde_json::from_slice(&bytes).context("invalid Cursor stream JSON")?;
+        if let Err(e) = capture.record(&bytes) {
+            capture.warn(format!("{e:#}"));
+        }
+    }
+    if capture.problems > 1 {
+        eprintln!(
+            "glance: {} more Cursor capture problems",
+            capture.problems - 1
+        );
+    }
+    if capture.id.is_none() && capture.problems == 0 {
+        eprintln!("glance: nothing captured; use --output-format stream-json");
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct StreamCapture {
+    state: Option<PathBuf>,
+    id: Option<String>,
+    cwd: Value,
+    model: Value,
+    problems: usize,
+}
+
+impl StreamCapture {
+    /// Report the first problem; later ones are counted to keep stderr readable.
+    fn warn(&mut self, message: String) {
+        if self.problems == 0 {
+            eprintln!("glance: Cursor capture skipped: {message}");
+        }
+        self.problems += 1;
+    }
+
+    fn record(&mut self, bytes: &[u8]) -> Result<()> {
+        let state = self
+            .state
+            .clone()
+            .context("Glance state directory is unavailable")?;
+        let v: Value = serde_json::from_slice(bytes).context("invalid Cursor stream JSON")?;
         if let Some(found) = v["session_id"].as_str() {
             crate::transcript::validate_session_id(found)?;
-            if id.as_ref().is_some_and(|id| id != found) {
-                bail!("Cursor stream changed session ID");
-            }
-            if id.is_none() {
-                eprintln!("glance: capturing Cursor session {found}");
-                id = Some(found.into());
+            match &self.id {
+                Some(id) if id != found => bail!("Cursor stream changed session ID"),
+                Some(_) => {}
+                None => {
+                    eprintln!("glance: capturing Cursor session {found}");
+                    self.id = Some(found.into());
+                }
             }
         }
-        let session = id.as_deref().context(
+        let session = self.id.clone().context(
             "Cursor stream needs an initial session_id; use --output-format stream-json",
         )?;
         if v["cwd"].is_string() {
-            cwd = v["cwd"].clone();
+            self.cwd = v["cwd"].clone();
         }
         if v["model"].is_string() {
-            model = v["model"].clone();
+            self.model = v["model"].clone();
         }
+        let (cwd, model) = (&self.cwd, &self.model);
         if v["type"] == "system" {
             append(
                 &state,
                 &json!({"conversation_id":session,"hook_event_name":"sessionStart","cwd":cwd,"model":model}),
             )?;
         }
-        let parsed = crate::harness::parse(crate::harness::Kind::Cursor, &bytes)?;
+        let parsed = crate::harness::parse(crate::harness::Kind::Cursor, bytes)?;
         for turn in parsed.turns {
             let (event, field, content) = match turn {
                 crate::transcript::Turn::User(t) => ("beforeSubmitPrompt", "prompt", t),
@@ -321,14 +377,8 @@ pub fn stream() -> Result<()> {
                 &json!({"conversation_id":session,"hook_event_name":"stop"}),
             )?;
         }
-        // Preserve the original CLI stream for downstream consumers.
-        std::io::stdout().write_all(&bytes)?;
-        std::io::stdout().flush()?;
+        Ok(())
     }
-    if id.is_none() {
-        bail!("empty Cursor stream");
-    }
-    Ok(())
 }
 
 #[cfg(test)]

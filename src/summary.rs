@@ -15,12 +15,39 @@ pub const DEFAULT_MODEL: &str = "claude-sonnet-5";
 
 #[derive(Default)]
 struct Options {
-    model: Option<String>,
+    /// `--model`: applies to the requested summary agent, never to a fallback.
+    cli_model: Option<String>,
+    /// `GLANCE_MODEL`, then `model` in config: Claude-only settings that predate other agents.
+    claude_model: Option<String>,
     prompt: Option<String>,
     harness: Option<crate::harness::Kind>,
     fallback: Option<crate::harness::Kind>,
     models: std::collections::BTreeMap<String, String>,
 }
+impl Options {
+    /// Model precedence: `--model` for the requested agent, then `summary_models[agent]`,
+    /// then (Claude only) `GLANCE_MODEL`, config `model` and the built-in default. Other
+    /// agents otherwise use their CLI's configured default.
+    fn model_for(
+        &self,
+        provider: crate::harness::Kind,
+        wanted: crate::harness::Kind,
+    ) -> Option<String> {
+        let explicit = (provider == wanted)
+            .then_some(self.cli_model.as_deref())
+            .flatten();
+        let configured = self.models.get(provider.name()).map(String::as_str);
+        if let Some(model) = resolve_model(explicit, configured, None) {
+            return Some(model);
+        }
+        (provider == crate::harness::Kind::Claude).then(|| {
+            self.claude_model
+                .clone()
+                .unwrap_or_else(|| DEFAULT_MODEL.into())
+        })
+    }
+}
+
 static OPTIONS: std::sync::OnceLock<Options> = std::sync::OnceLock::new();
 
 fn resolve_model(cli: Option<&str>, env: Option<&str>, config: Option<&str>) -> Option<String> {
@@ -38,13 +65,13 @@ pub fn configure(
     fallback: Option<crate::harness::Kind>,
     config: &crate::setup::Config,
 ) {
-    let model = resolve_model(
-        cli,
-        std::env::var("GLANCE_MODEL").ok().as_deref(),
-        config.model.as_deref(),
-    );
     let _ = OPTIONS.set(Options {
-        model,
+        cli_model: resolve_model(cli, None, None),
+        claude_model: resolve_model(
+            None,
+            std::env::var("GLANCE_MODEL").ok().as_deref(),
+            config.model.as_deref(),
+        ),
         prompt: config.prompt.clone(),
         harness: harness.or(config.summary_harness),
         fallback: fallback.or(config.summary_fallback),
@@ -122,7 +149,30 @@ pub struct Summary {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct Usage {
     pub calls: u64,
+    /// Sum of the estimates the CLI reported; calls without one are counted in `unpriced`.
     pub estimated_usd: Option<f64>,
+    #[serde(default)]
+    pub unpriced: u64,
+}
+
+impl Usage {
+    pub fn single(estimated_usd: Option<f64>) -> Self {
+        Self {
+            calls: 1,
+            estimated_usd,
+            unpriced: u64::from(estimated_usd.is_none()),
+        }
+    }
+
+    /// Add earlier calls. A missing estimate is never treated as zero cost.
+    pub fn accumulate(&mut self, previous: &Usage) {
+        self.calls += previous.calls;
+        self.unpriced += previous.unpriced;
+        self.estimated_usd = match (self.estimated_usd, previous.estimated_usd) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
+    }
 }
 
 impl Summary {
@@ -207,13 +257,7 @@ pub fn state_dir() -> Result<PathBuf> {
 }
 
 pub fn cache_path(session_id: &str) -> Result<PathBuf> {
-    if session_id.is_empty()
-        || !session_id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
-        bail!("invalid session id");
-    }
+    crate::transcript::validate_session_id(session_id)?;
     Ok(state_dir()?.join(format!("{session_id}.json")))
 }
 
@@ -335,16 +379,8 @@ pub fn summarize(
     let options = OPTIONS.get_or_init(Options::default);
     let wanted = options.harness.unwrap_or(kind);
     let (provider, executable) = crate::providers::select(wanted, options.fallback)?;
-    let model = options
-        .model
-        .as_deref()
-        .or_else(|| options.models.get(provider.name()).map(String::as_str))
-        .filter(|s| !s.trim().is_empty())
-        .or(if provider == crate::harness::Kind::Claude {
-            Some(DEFAULT_MODEL)
-        } else {
-            None
-        });
+    let model = options.model_for(provider, wanted);
+    let model = model.as_deref();
     let system = format!(
         "{SYSTEM}\nEvery item needs a stable id, source_turns containing the absolute turn indices that support it, and from (the id of the step or question it follows from, or null). Reuse prior IDs. Do not invent evidence or relationships; use an empty source list when unknown.\n{}",
         options.prompt.as_deref().unwrap_or("")
@@ -357,14 +393,8 @@ pub fn summarize(
         provider.name(),
         model.unwrap_or("default")
     ));
-    if let Some(usage) = &mut summary.usage {
-        usage.calls += prev.usage.as_ref().map(|u| u.calls).unwrap_or(0);
-        if let (Some(current), Some(previous)) = (
-            usage.estimated_usd,
-            prev.usage.as_ref().and_then(|u| u.estimated_usd),
-        ) {
-            usage.estimated_usd = Some(current + previous);
-        }
+    if let (Some(usage), Some(previous)) = (&mut summary.usage, &prev.usage) {
+        usage.accumulate(previous);
     }
     Ok(summary)
 }
@@ -481,10 +511,9 @@ pub(crate) fn parse_response(stdout: &str) -> Result<Summary> {
         other => serde_json::from_value(other.clone()).context("parse structured result")?,
     };
     summary.normalize();
-    summary.usage = Some(Usage {
-        calls: 1,
-        estimated_usd: envelope.get("total_cost_usd").and_then(Value::as_f64),
-    });
+    summary.usage = Some(Usage::single(
+        envelope.get("total_cost_usd").and_then(Value::as_f64),
+    ));
     Ok(summary)
 }
 
@@ -534,6 +563,51 @@ fn clean_cache_in(dir: &std::path::Path, cutoff: u64, dry_run: bool) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn global_model_settings_do_not_leak_to_other_agents_or_fallbacks() {
+        use crate::harness::Kind;
+        let options = Options {
+            cli_model: Some("cli-model".into()),
+            claude_model: Some("sonnet".into()),
+            models: [("codex".to_string(), "codex-model".to_string())].into(),
+            ..Options::default()
+        };
+        // --model applies to the requested agent only.
+        assert_eq!(
+            options.model_for(Kind::Codex, Kind::Codex).as_deref(),
+            Some("cli-model")
+        );
+        // A fallback uses its own configured model, not the one meant for the requested agent.
+        assert_eq!(
+            options.model_for(Kind::Codex, Kind::Gemini).as_deref(),
+            Some("codex-model")
+        );
+        assert_eq!(
+            options.model_for(Kind::Claude, Kind::Codex).as_deref(),
+            Some("sonnet")
+        );
+        // Claude-era settings never reach other agents; they keep their CLI default.
+        assert_eq!(options.model_for(Kind::Pi, Kind::Codex), None);
+        let defaults = Options::default();
+        assert_eq!(
+            defaults.model_for(Kind::Claude, Kind::Claude).as_deref(),
+            Some(DEFAULT_MODEL)
+        );
+        assert_eq!(defaults.model_for(Kind::Gemini, Kind::Gemini), None);
+    }
+
+    #[test]
+    fn usage_totals_keep_known_costs_and_count_unpriced_calls() {
+        let mut total = Usage::single(Some(0.25));
+        total.accumulate(&Usage::single(None));
+        assert_eq!((total.calls, total.unpriced), (2, 1));
+        assert_eq!(total.estimated_usd, Some(0.25));
+        let mut later = Usage::single(Some(0.5));
+        later.accumulate(&total);
+        assert_eq!((later.calls, later.unpriced), (3, 1));
+        assert_eq!(later.estimated_usd, Some(0.75));
+    }
 
     #[test]
     fn cleanup_preserves_configuration_todos_and_recent_cache() {
