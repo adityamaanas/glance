@@ -25,13 +25,23 @@ The compatibility matrix distinguishes fixture/process checks from live use.
 | Long sessions | Forward chunks retain early turns; individual message excerpts remain clipped |
 | Distribution | Five target archives, checksums, native installer smoke tests and a manual crate workflow |
 
-## Release and live validation work
+## Distribution
 
-- Choose the next version from the changelog.
-- Publish a tagged release after CI and installer validation.
-- Configure the crates.io token and protected environment, then perform the
-  reviewed manual publish. Create a Homebrew tap if tap distribution is desired;
-  only formula generation is currently configured.
+Glance installs with one command from GitHub releases (shell and PowerShell
+installers, five platforms). Planned channels, in order:
+
+- **crates.io** (`cargo install glance-panel`, and `cargo binstall glance-panel`
+  for prebuilt binaries): the manual publish workflow exists; it needs a
+  crates.io token in a protected `crates-io` environment and a first reviewed
+  publish.
+- **Homebrew** (`brew install adityamaanas/tap/glance-panel`): the formula is
+  already generated with each release; it needs a `homebrew-tap` repository,
+  a publishing token, and the tap enabled in `dist-workspace.toml`.
+- **Other package managers** (for example winget, Scoop, AUR or Nix) once there
+  is demand.
+
+## Live validation work
+
 - Record authenticated live CLI versions for each provider and test actual
   Cursor IDE/CLI sessions after setup. Mock contracts do not establish every
   installed CLI version's behavior.
