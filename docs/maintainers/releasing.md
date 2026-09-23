@@ -5,7 +5,7 @@
 For maintainers: how releases are built, checked and published.
 
 Glance uses cargo-dist 0.32.0 to build versioned release archives, SHA-256
-checksums, shell and PowerShell installers, and a Homebrew formula. The package
+checksums, and shell and PowerShell installers. The package
 and executable are both named `glance-panel`.
 
 ## Supported build targets
@@ -64,10 +64,12 @@ See [agent transcript formats](../reference/agents.md),
 [Follow Cursor](../how-to/cursor.md), and [summary providers](../how-to/summary-providers.md)
 for agent-specific configuration and validation limits.
 
-The generated `glance-panel.rb` formula is a release artifact. There is no
-configured Homebrew tap or automatic tap publication yet. Do not advertise a
-`brew install owner/tap/glance-panel` command until a maintainer creates the tap,
-adds it to `dist-workspace.toml`, and configures its publishing credentials.
+Homebrew is switched off: with the `homebrew` installer enabled, cargo-dist
+writes a `brew install` line into every release's notes, which fails without a
+tap. To enable it, create the tap repository, add `"homebrew"` back to
+`installers` in `dist-workspace.toml` together with `tap` and
+`publish-jobs = ["homebrew"]`, configure the tap's publishing token, and run
+`dist generate`.
 
 ## Validate packaging
 

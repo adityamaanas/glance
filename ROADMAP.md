@@ -34,9 +34,11 @@ installers, five platforms). Planned channels, in order:
   for prebuilt binaries): the manual publish workflow exists; it needs a
   crates.io token in a protected `crates-io` environment and a first reviewed
   publish.
-- **Homebrew** (`brew install adityamaanas/tap/glance-panel`): the formula is
-  already generated with each release; it needs a `homebrew-tap` repository,
-  a publishing token, and the tap enabled in `dist-workspace.toml`.
+- **Homebrew** (`brew install adityamaanas/tap/glance-panel`): cargo-dist can
+  generate and publish the formula; it needs a `homebrew-tap` repository, a
+  publishing token, and the `homebrew` installer re-enabled with the tap in
+  `dist-workspace.toml` (switched off until then, so release notes don't
+  advertise a command that fails).
 - **Other package managers** (for example winget, Scoop, AUR or Nix) once there
   is demand.
 
