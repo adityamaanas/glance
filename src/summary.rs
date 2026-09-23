@@ -149,13 +149,7 @@ pub fn state_dir() -> Result<PathBuf> {
 }
 
 pub fn cache_path(session_id: &str) -> Result<PathBuf> {
-    if session_id.is_empty()
-        || !session_id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
-        bail!("invalid session id");
-    }
+    crate::transcript::validate_session_id(session_id)?;
     Ok(state_dir()?.join(format!("{session_id}.json")))
 }
 
