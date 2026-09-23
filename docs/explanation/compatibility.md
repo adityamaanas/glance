@@ -1,6 +1,6 @@
 # Compatibility and validation
 
-[← Home](../README.md) · [Adapters](agent-transcripts.md) · [Summary providers](summary-providers.md)
+[Docs home](../README.md) · [Agent formats](../reference/agents.md) · [Summary providers](../how-to/summary-providers.md)
 
 Coverage recorded on 2026-09-07. Fixture support, process contract checks and
 authenticated live operation are different validation levels. No live provider
@@ -23,7 +23,7 @@ version is certified by the mock tests below.
 Rust 1.88 is the tested minimum. Release builds include SQLite, so prebuilt
 binaries do not require a separate SQLite installation. Linux binaries target
 glibc; Alpine/musl and native Windows ARM64 builds are outside this matrix.
-See [distribution](distribution.md) for release details.
+See [releasing](../maintainers/releasing.md) for release details.
 
 ## Agent adapters and summary providers
 

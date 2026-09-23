@@ -1,6 +1,8 @@
 # Privacy and data handling
 
-[← Home](../README.md) · [User guide](usage.md) · [Security reporting](../SECURITY.md)
+What Glance reads, what it stores, and what leaves your machine.
+
+[Docs home](../README.md) · [Files and environment](../reference/files-and-environment.md) · [Security reporting](../../SECURITY.md)
 
 ## What Glance reads and captures
 
@@ -13,7 +15,7 @@ Optional Cursor IDE hooks capture new visible events into Glance-owned files.
 `cursor-stream` captures CLI events while forwarding stdout; forwarding never
 depends on capture succeeding. These routes do
 not automatically import historical IDE chats or read Cursor's private database.
-See [Cursor](cursor.md).
+See [Follow Cursor](../how-to/cursor.md).
 
 ## What reaches a summary provider
 
@@ -36,12 +38,13 @@ Helpers use temporary directories outside the project and request provider
 specific tool restrictions. Claude, Codex and pi request ephemeral/no-session
 behavior; Gemini, OpenCode and Cursor may retain helper history under their own
 policies. These settings are not a universal OS security boundary. Read
-[summary providers](summary-providers.md) before selecting a provider.
+[Choose who writes summaries](../how-to/summary-providers.md) before selecting a provider.
 
 ## Local storage and sharing
 
 Caches, todos, preferences, logs and captured Cursor content live under
-`~/.glance/`, or `GLANCE_HOME`. Treat derived summaries and graph exports as
+`~/.glance/`, or `GLANCE_HOME`; the [file list](../reference/files-and-environment.md#what-glance-stores)
+describes each one. Treat derived summaries and graph exports as
 sensitive conversation content. HTML exports embed excerpts and work offline.
 
 Explicit setup writes Claude/Cursor hook settings with backups and preserves
