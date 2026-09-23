@@ -26,6 +26,16 @@ newer; users of prebuilt archives do not need Rust or SQLite installed.
 
 ## Install a published release
 
+The one-line installers always fetch the latest release:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/adityamaanas/glance/releases/latest/download/glance-panel-installer.sh | sh
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/adityamaanas/glance/releases/latest/download/glance-panel-installer.ps1 | iex"
+```
+
 Open the [releases page](https://github.com/adityamaanas/glance/releases), choose
 a version, and download its archive and matching `.sha256` file. Verify the
 checksum with `sha256sum` on Linux, `shasum -a 256` on macOS, or

@@ -57,6 +57,6 @@ A change is not done until its documentation is:
 - **One changelog.** User-visible changes go in [`CHANGELOG.md`](../CHANGELOG.md) under "Unreleased", written for users (what changed for them), not reviewers. CI fails a PR that changes `src/` without touching the changelog; add the `no-changelog` label for internal-only changes such as refactors and tests.
 - **Versions change only at release time**, in a dedicated release PR (see [releasing](maintainers/releasing.md#publish-a-release)), never in feature PRs.
 
-## 6. Later, at first release
+## 6. Next
 
-Publish these docs as a searchable site generated from this same `docs/` folder (mdBook suits a Rust project), and add an install table covering prebuilt archives, installers and package managers.
+Publish these docs as a searchable site generated from this same `docs/` folder (mdBook suits a Rust project). Add package managers (crates.io, Homebrew) to the README's install table as they are published.

@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-User-visible changes since 0.2.0. Existing summary caches rebuild once after upgrading.
+## 0.3.0 (2026-09-23)
+
+First release with prebuilt binaries and one-line installers. Existing summary caches rebuild once after upgrading.
 
 ### Added
 
@@ -16,7 +18,7 @@ User-visible changes since 0.2.0. Existing summary caches rebuild once after upg
 - **herdr sidebar.** `--sidebar` or `sidebar_metadata` shows the current step and plan progress in herdr's sidebar.
 - **Windows support**, including herdr's named pipe (`HERDR_SOCKET_PATH`) and PowerShell/Command Prompt hooks.
 - **Controls.** `--no-model`/`no_model`, `--refresh-seconds`, a custom `prompt`, `cache-clean` and `cache_retention_days`. The footer shows summary calls and reported cost (`+` marks a lower bound).
-- **Release builds** for macOS (Intel and Apple Silicon), Linux (x86-64 and ARM64) and Windows, with installers, checked in CI. Not yet published.
+- **One-line installers** and prebuilt binaries for macOS (Intel and Apple Silicon), Linux (x86-64 and ARM64) and Windows. See the README's install section.
 
 ### Changed
 
