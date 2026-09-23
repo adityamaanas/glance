@@ -13,6 +13,7 @@ use std::time::Duration;
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentSession {
     pub value: String,
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

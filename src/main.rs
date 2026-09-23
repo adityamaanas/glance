@@ -2,7 +2,9 @@
 
 mod discovery;
 mod evidence;
+mod harness;
 mod herdr;
+mod opencode;
 mod placement;
 mod setup;
 mod signals;
@@ -47,6 +49,12 @@ struct Cli {
     /// Follow the most recently updated session for this project.
     #[arg(long, conflicts_with_all = ["session", "pane"])]
     cwd: Option<std::path::PathBuf>,
+    /// Transcript format (herdr sessions can detect this automatically).
+    #[arg(long, global = true, value_enum)]
+    harness: Option<harness::Kind>,
+    /// Follow a transcript/export in a custom location.
+    #[arg(long, global = true)]
+    transcript: Option<std::path::PathBuf>,
     /// Never call the model; show free fields and the cached summary only.
     #[arg(long)]
     no_model: bool,
@@ -65,6 +73,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Print normalized transcript turns without calling a model.
+    Transcript {
+        #[arg(long)]
+        session: String,
+    },
     /// Install or remove session and turn-end hooks for Claude Code.
     Setup {
         #[arg(long)]
@@ -174,12 +187,31 @@ fn main() -> Result<()> {
     cli.no_model |= cfg.no_model;
     cli.sidebar |= cfg.sidebar_metadata;
     cli.refresh_seconds = cli.refresh_seconds.or(cfg.refresh_seconds);
+    let source = Source {
+        kind: cli.harness.unwrap_or_default(),
+        path: cli.transcript.as_deref(),
+    };
     if cli.command.is_none() {
         if let Some(days) = cfg.cache_retention_days {
             summary::clean_cache(days, false)?;
         }
     }
     match cli.command {
+        Some(Cmd::Transcript { session }) => {
+            let mut tr = Transcript::open_for(
+                &harness::locate(source.kind, &session, source.path)?,
+                source.kind,
+                &session,
+            );
+            tr.read_new()?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &serde_json::json!({"harness":source.kind,"session":session,"fields":tr.free,"turns":tr.turns})
+                )?
+            );
+            Ok(())
+        }
         Some(Cmd::Setup { remove, .. }) => {
             println!(
                 "{}",
@@ -202,6 +234,7 @@ fn main() -> Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&discovery::sessions(
+                        source.kind,
                         cwd.as_deref(),
                         query.as_deref()
                     )?)?
@@ -209,7 +242,7 @@ fn main() -> Result<()> {
             } else {
                 println!(
                     "{}",
-                    discovery::pick(cwd.as_deref(), query.as_deref(), latest)?
+                    discovery::pick(source.kind, cwd.as_deref(), query.as_deref(), latest)?
                 );
             }
             Ok(())
@@ -227,12 +260,13 @@ fn main() -> Result<()> {
             set.zip(status),
             delete,
             carry_from,
+            source,
         ),
         Some(Cmd::Graph {
             session,
             html,
             open,
-        }) => export_graph(&session, html, open),
+        }) => export_graph(&session, html, open, source),
         Some(Cmd::CacheClean {
             older_than_days,
             dry_run,
@@ -256,13 +290,14 @@ fn main() -> Result<()> {
                 cwd.as_deref().or(cli.cwd.as_deref()),
                 ratio,
                 cli.no_model,
+                source.kind,
             ),
         },
         Some(Cmd::Summarize { session }) => {
             if cli.no_model {
                 bail!("model calls disabled by --no-model or config.json");
             }
-            summarize_once(&session)
+            summarize_once(&session, source)
         }
         Some(Cmd::Hook { install: true, .. }) => {
             println!("{}", setup::install_hook()?);
@@ -506,9 +541,16 @@ fn start_in_pane(
     bail!("glance did not start in pane {pane}")
 }
 
-fn summarize_once(session: &str) -> Result<()> {
-    let path = transcript::find_transcript(session)?;
-    let mut tr = Transcript::open(&path);
+#[derive(Clone, Copy)]
+struct Source<'a> {
+    kind: harness::Kind,
+    path: Option<&'a std::path::Path>,
+}
+
+fn summarize_once(session: &str, source: Source) -> Result<()> {
+    let path = harness::locate(source.kind, session, source.path)?;
+    let key = source.kind.storage_key(session);
+    let mut tr = Transcript::open_for(&path, source.kind, session);
     tr.read_new()?;
     let mut s = Summary::default();
     let mut from = 0;
@@ -520,7 +562,7 @@ fn summarize_once(session: &str) -> Result<()> {
             end,
             tr.turns.len()
         );
-        let todo_path = todos::path(session)?;
+        let todo_path = todos::path(&key)?;
         let snapshot = todos::load(&todo_path)?;
         s = summary::summarize(&s, &text, tr.free.title.as_deref(), &snapshot.items)?;
         if !s.todo_updates.is_empty() {
@@ -543,7 +585,7 @@ fn summarize_once(session: &str) -> Result<()> {
         updated_at: summary::now_secs(),
         source: summary::model(),
     };
-    summary::save_cache(session, &cache)?;
+    summary::save_cache(&key, &cache)?;
     Ok(())
 }
 
@@ -553,6 +595,7 @@ fn todo_command(
     set: Option<(String, todos::Status)>,
     delete: Option<String>,
     carry: Option<String>,
+    source: Source,
 ) -> Result<()> {
     let session = match session {
         Some(id) => id,
@@ -567,10 +610,11 @@ fn todo_command(
                 .value
         }
     };
-    let path = todos::path(&session)?;
-    let mut tr = transcript::find_transcript(&session)
+    let key = source.kind.storage_key(&session);
+    let path = todos::path(&key)?;
+    let mut tr = harness::locate(source.kind, &session, source.path)
         .ok()
-        .map(|p| Transcript::open(&p));
+        .map(|p| Transcript::open_for(&p, source.kind, &session));
     if let Some(tr) = &mut tr {
         tr.read_new()?;
     }
@@ -585,7 +629,7 @@ fn todo_command(
                 if id == session {
                     bail!("cannot carry todos into the same session");
                 }
-                todos::load(&todos::path(&id)?)
+                todos::load(&todos::path(&source.kind.storage_key(&id))?)
             })
             .transpose()?;
         todos::edit(&path, |s| {
@@ -612,11 +656,20 @@ fn todo_command(
     Ok(())
 }
 
-fn export_graph(session: &str, path: Option<std::path::PathBuf>, launch: bool) -> Result<()> {
-    let mut tr = Transcript::open(&transcript::find_transcript(session)?);
+fn export_graph(
+    session: &str,
+    path: Option<std::path::PathBuf>,
+    launch: bool,
+    source: Source,
+) -> Result<()> {
+    let mut tr = Transcript::open_for(
+        &harness::locate(source.kind, session, source.path)?,
+        source.kind,
+        session,
+    );
     tr.read_new()?;
-    let mut cache =
-        summary::load_cache(session).context("no compatible summary cache; run summarize first")?;
+    let mut cache = summary::load_cache(&source.kind.storage_key(session))
+        .context("no compatible summary cache; run summarize first")?;
     if cache.turns_done > tr.turns.len() || cache.fingerprint != tr.fingerprint(cache.turns_done) {
         bail!("summary cache belongs to a different transcript revision; refresh it first");
     }
@@ -646,6 +699,7 @@ fn export_graph(session: &str, path: Option<std::path::PathBuf>, launch: bool) -
 
 struct App {
     session_id: String,
+    harness_override: Option<harness::Kind>,
     client: Option<herdr::Client>,
     pane: Option<String>,
     watched_path: Arc<Mutex<std::path::PathBuf>>,
@@ -678,6 +732,9 @@ struct App {
 }
 
 impl App {
+    fn storage_key(&self) -> String {
+        self.tr.harness.storage_key(&self.session_id)
+    }
     fn row_count(&self) -> usize {
         if self.todo_mode {
             self.todos.items.len()
@@ -687,7 +744,7 @@ impl App {
     }
 
     fn reload_todos(&mut self) {
-        match todos::path(&self.session_id).and_then(|p| todos::load(&p)) {
+        match todos::path(&self.storage_key()).and_then(|p| todos::load(&p)) {
             Ok(store) => self.todos = store,
             Err(e) => self.error = Some(e.to_string()),
         }
@@ -695,10 +752,11 @@ impl App {
 
     fn edit_todos(&mut self, change: impl FnOnce(&mut todos::Store, usize, u64) -> Result<()>) {
         let result = (|| {
-            let mut current = Transcript::open(&self.tr.path);
+            let mut current =
+                Transcript::open_for(&self.tr.path, self.tr.harness, &self.session_id);
             current.read_new()?;
             let count = current.turns.len();
-            todos::edit(&todos::path(&self.session_id)?, |store| {
+            todos::edit(&todos::path(&self.storage_key())?, |store| {
                 change(store, count, current.fingerprint(count))
             })
         })();
@@ -816,12 +874,13 @@ fn run(cli: Cli) -> Result<()> {
     let mut agent_status = None;
     let mut watched_pane = None;
     let mut agent_cwd: Option<String> = None;
+    let mut kind = cli.harness.unwrap_or_default();
     let session_id = if let Some(s) = cli.session {
         s
     } else if let Some(cwd) = cli.cwd {
-        discovery::pick(Some(&cwd), None, true)?
+        discovery::pick(kind, Some(&cwd), None, true)?
     } else if client.is_none() {
-        discovery::pick(None, None, false)?
+        discovery::pick(kind, None, None, false)?
     } else {
         let client = client
             .as_ref()
@@ -831,6 +890,14 @@ fn run(cli: Cli) -> Result<()> {
             None => neighbor_pane(client)?,
         };
         let info = wait_for_session(client, &pane)?;
+        if cli.harness.is_none() {
+            kind = info
+                .agent_session
+                .as_ref()
+                .and_then(|s| s.agent.as_deref())
+                .and_then(harness::Kind::parse)
+                .unwrap_or_default();
+        }
         agent_status = Some(info.agent_status.clone());
         agent_cwd = info.cwd.clone();
         client.watch_status(pane.clone(), status_forwarder(tx.clone()));
@@ -841,16 +908,18 @@ fn run(cli: Cli) -> Result<()> {
     };
 
     // A fresh session has no transcript until its first prompt; watch the path it will get.
-    let path = match transcript::find_transcript(&session_id) {
+    let path = match harness::locate(kind, &session_id, cli.transcript.as_deref()) {
         Ok(p) => p,
         Err(e) => match &agent_cwd {
-            Some(cwd) => transcript::expected_path(cwd, &session_id)?,
-            None => return Err(e),
+            Some(cwd) if kind == harness::Kind::Claude => {
+                transcript::expected_path(cwd, &session_id)?
+            }
+            _ => return Err(e),
         },
     };
-    let mut tr = Transcript::open(&path);
+    let mut tr = Transcript::open_for(&path, kind, &session_id);
     tr.read_new()?;
-    let cache = summary::load_cache(&session_id)
+    let cache = summary::load_cache(&kind.storage_key(&session_id))
         .filter(|c| c.turns_done <= tr.turns.len() && c.fingerprint == tr.fingerprint(c.turns_done))
         .unwrap_or_else(|| Cache {
             version: summary::CACHE_VERSION,
@@ -862,9 +931,10 @@ fn run(cli: Cli) -> Result<()> {
         });
 
     let watched_path = Arc::new(Mutex::new(tr.path.clone()));
-    let todos = todos::load(&todos::path(&session_id)?)?;
+    let todos = todos::load(&todos::path(&kind.storage_key(&session_id))?)?;
     let mut app = App {
         session_id,
+        harness_override: cli.harness,
         client,
         pane: watched_pane,
         watched_path: watched_path.clone(),
@@ -954,9 +1024,14 @@ fn spawn_poller(path: Arc<Mutex<std::path::PathBuf>>, tx: Sender<Msg>) {
         loop {
             thread::sleep(Duration::from_millis(700));
             let p = path.lock().map(|g| g.clone()).unwrap_or_default();
-            let signature = std::fs::metadata(&p)
-                .ok()
-                .map(|m| (p, m.len(), m.modified().ok()));
+            let signature = std::fs::metadata(&p).ok().map(|m| {
+                let mut wal = p.as_os_str().to_os_string();
+                wal.push("-wal");
+                let wal = std::fs::metadata(std::path::PathBuf::from(wal))
+                    .ok()
+                    .map(|m| (m.len(), m.modified().ok()));
+                (p, m.len(), m.modified().ok(), wal)
+            });
             if signature != last {
                 last = signature;
                 if tx.send(Msg::Grew).is_err() {
@@ -1207,7 +1282,7 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
                     .unwrap_or_default();
                 if app.finish_summary(*result, turns_done, generation) {
                     if !updates.is_empty() {
-                        if let Err(e) = todos::path(&app.session_id).and_then(|path| {
+                        if let Err(e) = todos::path(&app.storage_key()).and_then(|path| {
                             todos::edit(&path, |store| {
                                 store.apply(&snapshot, &updates, &app.tr, turns_done);
                                 Ok(())
@@ -1217,7 +1292,7 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
                         }
                     }
                     app.cache.summary.todo_updates.clear();
-                    if let Err(e) = summary::save_cache(&app.session_id, &app.cache) {
+                    if let Err(e) = summary::save_cache(&app.storage_key(), &app.cache) {
                         app.error = Some(e.to_string());
                     }
                 }
@@ -1271,25 +1346,35 @@ fn follow_session_change(app: &mut App) {
     let Ok(info) = client.agent_get(pane) else {
         return;
     };
+    let kind = app
+        .harness_override
+        .or_else(|| {
+            info.agent_session
+                .as_ref()
+                .and_then(|s| s.agent.as_deref())
+                .and_then(harness::Kind::parse)
+        })
+        .unwrap_or(app.tr.harness);
     let Some(sid) = info.agent_session.map(|s| s.value) else {
         return;
     };
-    if sid == app.session_id {
+    if sid == app.session_id && kind == app.tr.harness {
         return;
     }
-    let Ok(path) = transcript::find_transcript(&sid).or_else(|e| {
+    let Ok(path) = harness::locate(kind, &sid, None).or_else(|e| {
         info.cwd
             .as_deref()
+            .filter(|_| kind == harness::Kind::Claude)
             .map(|cwd| transcript::expected_path(cwd, &sid))
             .unwrap_or(Err(e))
     }) else {
         return;
     };
-    let mut tr = Transcript::open(&path);
+    let mut tr = Transcript::open_for(&path, kind, &sid);
     if tr.read_new().is_err() {
         return;
     }
-    app.cache = summary::load_cache(&sid)
+    app.cache = summary::load_cache(&kind.storage_key(&sid))
         .filter(|c| c.turns_done <= tr.turns.len() && c.fingerprint == tr.fingerprint(c.turns_done))
         .unwrap_or_else(|| Cache {
             version: summary::CACHE_VERSION,
@@ -1355,7 +1440,7 @@ fn maybe_summarize(app: &mut App) {
         .clone()
         .or_else(|| app.tr.free.title.clone());
     let generation = app.generation;
-    let snapshot = match todos::path(&app.session_id).and_then(|p| todos::load(&p)) {
+    let snapshot = match todos::path(&app.storage_key()).and_then(|p| todos::load(&p)) {
         Ok(store) => store.items,
         Err(e) => {
             app.error = Some(e.to_string());
@@ -1415,6 +1500,7 @@ mod tests {
         let path = std::path::PathBuf::from("unused.jsonl");
         let mut app = App {
             session_id: "new-session".into(),
+            harness_override: None,
             client: None,
             pane: None,
             watched_path: Arc::new(Mutex::new(path.clone())),

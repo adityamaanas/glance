@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"same-id","cwd":"/project"}
+{"type":"message","id":"u1","parentId":null,"message":{"role":"user","content":"Check retries"}}
+{"type":"message","id":"a1","parentId":"u1","message":{"role":"assistant","content":[{"type":"text","text":"Discard this result"}]}}
+{"type":"message","id":"t1","parentId":"u1","message":{"role":"toolResult","toolName":"test","isError":false,"content":[{"type":"text","text":"retry test passed"}]}}
+{"type":"message","id":"a2","parentId":"t1","message":{"role":"assistant","content":[{"type":"thinking","thinking":"private reasoning"},{"type":"text","text":"Retries verified"}]}}

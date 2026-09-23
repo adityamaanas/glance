@@ -27,12 +27,79 @@ fn same_path(a: &Path, b: &Path) -> bool {
     }
 }
 
-pub fn sessions(cwd: Option<&Path>, query: Option<&str>) -> Result<Vec<Session>> {
-    scan(
-        &crate::transcript::claude_dir()?.join("projects"),
-        cwd,
-        query,
-    )
+pub fn sessions(
+    kind: crate::harness::Kind,
+    cwd: Option<&Path>,
+    query: Option<&str>,
+) -> Result<Vec<Session>> {
+    if kind == crate::harness::Kind::Claude {
+        return scan(
+            &crate::transcript::claude_dir()?.join("projects"),
+            cwd,
+            query,
+        );
+    }
+    let mut found = Vec::new();
+    if kind == crate::harness::Kind::Opencode {
+        let path = crate::harness::root(kind)?;
+        for (id, cwd, title, modified) in crate::opencode::sessions(&path)? {
+            found.push(Session {
+                id,
+                path: path.clone(),
+                cwd: Some(cwd),
+                title,
+                modified,
+            });
+        }
+    } else {
+        for path in crate::harness::files(kind)? {
+            let Ok(snapshot) = crate::harness::inspect(kind, &path) else {
+                continue;
+            };
+            let Some(id) = snapshot.id else { continue };
+            if crate::transcript::validate_session_id(&id).is_err() {
+                continue;
+            }
+            let modified = std::fs::metadata(&path)?
+                .modified()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            found.push(Session {
+                id,
+                path,
+                cwd: snapshot.free.cwd,
+                title: snapshot
+                    .free
+                    .custom_title
+                    .or(snapshot.free.title)
+                    .unwrap_or_default(),
+                modified,
+            });
+        }
+    }
+    found.retain(|s| {
+        cwd.is_none_or(|wanted| {
+            s.cwd
+                .as_ref()
+                .is_some_and(|c| same_path(Path::new(c), wanted))
+        }) && query.is_none_or(|q| {
+            format!("{} {} {}", s.id, s.title, s.cwd.as_deref().unwrap_or(""))
+                .to_lowercase()
+                .contains(&q.to_lowercase())
+        })
+    });
+    found.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| a.id.cmp(&b.id)));
+    for s in &mut found {
+        s.title = crate::transcript::clip(
+            &s.title
+                .chars()
+                .filter(|c| !c.is_control())
+                .collect::<String>(),
+            90,
+        );
+    }
+    Ok(found)
 }
 
 /// Existing project folders for `cwd`, as written and canonicalized (symlinks, `..`).
@@ -157,8 +224,13 @@ fn scan(root: &Path, cwd: Option<&Path>, query: Option<&str>) -> Result<Vec<Sess
     Ok(sessions)
 }
 
-pub fn pick(cwd: Option<&Path>, query: Option<&str>, latest: bool) -> Result<String> {
-    let sessions = sessions(cwd, query)?;
+pub fn pick(
+    kind: crate::harness::Kind,
+    cwd: Option<&Path>,
+    query: Option<&str>,
+    latest: bool,
+) -> Result<String> {
+    let sessions = sessions(kind, cwd, query)?;
     if sessions.is_empty() {
         bail!("no matching sessions; start a conversation first");
     }
