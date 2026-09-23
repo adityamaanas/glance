@@ -1,0 +1,5 @@
+{
+  "name": "glance",
+  "owner": { "name": "Glance contributors" },
+  "plugins": [{ "name": "glance-panel", "source": "./claude-plugin", "description": "Hooks for the Glance orientation panel" }]
+}
