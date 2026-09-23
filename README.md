@@ -1,122 +1,96 @@
 <div align="center">
 
-<img src="assets/readme/hero.svg" alt="glance — Pick up where you left off. A live orientation panel for your coding-agent session." width="960">
+# Glance
+
+**Pick up where you left off.**
+
+A live panel beside your coding agent that keeps the goal, the current step, the plan and the loose ends in view,<br>
+so you can come back after a break without rereading the conversation.
 
 [![CI](https://github.com/adityamaanas/glance/actions/workflows/ci.yml/badge.svg)](https://github.com/adityamaanas/glance/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-76d8cc?labelColor=172c35)](LICENSE)
 [![Built with Rust](https://img.shields.io/badge/built%20with-Rust-efb78b?labelColor=172c35)](Cargo.toml)
 
-**Your session, back in focus.**
+[Getting started](docs/getting-started.md) · [Reading the panel](docs/reading-the-panel.md) · [Documentation](docs/README.md) · [Troubleshooting](docs/troubleshooting.md)
 
-A live panel beside your coding agent: the goal, the current work, the plan, and the loose ends.
-Come back after a break without rereading the conversation.
+<img src="docs/assets/screens/panel.svg" alt="The Glance panel following a fictional session: the goal, the current step, two workstreams, a plan at 3 of 5 steps, personal todos, an open question, decisions and the agent's last message" width="860">
 
-[Quick start](#quick-start) · [User guide](docs/usage.md) · [How it works](docs/architecture.md) · [Roadmap](ROADMAP.md) · [Contribute](CONTRIBUTING.md)
+<sub>A real render of the panel, following a fictional session.</sub>
 
 </div>
 
----
+## Why Glance
 
-## See the work at a glance
+Agent sessions get long. Twenty minutes in, the plan has changed twice, a question is still open, and a side quest is parked somewhere in the scrollback. Glance reads the transcript your agent already writes and keeps a short, checkable summary beside it:
 
-<img src="assets/readme/panel.svg" alt="Illustrative split-pane layout: a Claude Code conversation beside a Glance panel showing the goal, current work, plan, an open question, and a decision." width="960">
+- **The goal and the current step**, always at the top.
+- **A living plan** with progress, plus open questions, decisions and blockers.
+- **Evidence** for every item: the exact turns it came from.
+- **Your own todos**, which the summary can tick off but never rewrite.
 
-*Illustrative example using fictional session content. The terminal layout adapts to your pane.*
+It reads only; it never types into your session or changes its files.
 
-| Keep your bearings | Follow the details |
-| :--- | :--- |
-| **One stable goal.** Remember what the session is working toward. | **A living plan.** See completed steps, current work, and blockers. |
-| **The open loops.** Keep unanswered questions and decisions in view. | **Separate workstreams.** Focus on one thread or see the whole session. |
-| **A quick return.** Cached summaries appear when you reopen the panel. | **A second perspective.** Switch to the rail to see items arranged by workstream. |
-| **Check the evidence.** Open the transcript turns behind an item. | **Keep your own reminders.** Add todos whose wording stays yours. |
-| **See relationships.** Explore a graph or export it as offline HTML. | **Choose your agent.** Read Claude, Codex, Gemini, pi, OpenCode and Cursor conversations. |
+## Install
 
-Glance reads local transcripts and exports; Cursor IDE can supply new events through optional hooks. Summaries run through a separate invocation of your selected agent CLI using its configured login. The default provider matches the transcript's agent. See the [compatibility matrix](docs/compatibility.md) for fixture coverage and live verification limits.
+Glance has no published release yet. Build it with [Rust](https://www.rust-lang.org/tools/install) 1.88 or newer:
+
+```sh
+cargo install --locked --git https://github.com/adityamaanas/glance
+```
+
+This installs the `glance-panel` command on Windows, macOS or Linux. Prebuilt archives and installers are prepared for five platforms and will be listed here with the first release ([details](docs/maintainers/releasing.md)).
 
 ## Quick start
 
-**Platforms:** Windows, macOS and Linux. Building from source requires Rust 1.88 or newer. Model summaries require an installed and authenticated agent CLI; `--no-model` works without one. [herdr](https://herdr.dev), tmux and Zellij provide automatic split placement, and manual splits work with a session ID.
+With [Claude Code](https://code.claude.com/docs) running in one pane, open a second pane in the same project and run:
 
 ```sh
-# Install from source
-cargo install --git https://github.com/adityamaanas/glance
-
-# Enable herdr's Claude integration
-herdr integration install claude
-
-# Run inside the herdr pane hosting Claude Code
-glance-panel attach
+glance-panel --cwd .
 ```
 
-In a running Claude Code conversation, use `! glance-panel attach` to run the command in that pane.
+After the agent's next turn, the summary appears. The [getting-started tutorial](docs/getting-started.md) walks through it in ten minutes.
 
-The first Claude panel offers hook setup. Accept with `y`, or decline with `n`. Change this later with `glance-panel setup` or `glance-panel setup --remove`. Cursor IDE setup is explicit: `glance-panel setup --harness cursor`.
+### Pick your setup
 
-**Using another terminal?** Open your own split and follow a known session ID:
+| You use | Run | Guide |
+| --- | --- | --- |
+| [herdr](https://herdr.dev) | `glance-panel attach`, or `glance-panel setup` to open it for every session | [herdr](docs/how-to/herdr.md) |
+| tmux or Zellij | `glance-panel attach --backend tmux` (or `zellij`) | [Other terminals](docs/how-to/other-terminals.md) |
+| Any other terminal | Open a split, then `glance-panel --cwd .` | [Other terminals](docs/how-to/other-terminals.md) |
+| Codex, Gemini CLI, pi or OpenCode | Add `--harness codex` (or `gemini`, `pi`, `opencode`) | [Other agents](docs/how-to/other-agents.md) |
+| Cursor IDE or CLI | `glance-panel setup --harness cursor`, then `--harness cursor --cwd .` | [Cursor](docs/how-to/cursor.md) |
 
-```sh
-glance-panel --session <session-id>
-glance-panel --harness codex --cwd /path/to/project
-glance-panel --harness cursor --session <conversation-id> --no-model
-```
+Summaries use your agent's own CLI and login. Add `--no-model` to keep everything local.
 
-The installed binary is **`glance-panel`**. Release archives and installers are configured for five targets; download them when a release containing these changes is published. Homebrew tap publication and crates.io credentials require maintainer setup. See [distribution](docs/distribution.md).
+## A quick tour
 
-## Small controls, useful context
-
-| Key | Action |
+| | |
 | :--- | :--- |
-| `j` / `k` | Scroll down / up |
-| Up / Down | Select an item |
-| Enter / `e` | Open supporting transcript evidence |
-| `r` | Request another summary |
-| `v` | Toggle panel / rail view |
-| `g` | Toggle relationship graph |
-| `a` / `t` | Add a todo / select the todo list |
-| `x` / `d` | Toggle / delete the selected todo |
-| `[` / `]` | Move between workstreams |
-| `0` | Show all workstreams |
-| `p` | Toggle pinned focus / follow the conversation |
-| `q` | Quit |
+| <img src="docs/assets/screens/evidence.svg" alt="Evidence view: a selected plan step with the transcript turns that support it" width="420"> | **Check the evidence.** Press `Enter` on any item to see the transcript turns behind it. [More](docs/how-to/evidence-and-graphs.md) |
+| <img src="docs/assets/screens/graph.svg" alt="Graph view: steps, questions and decisions indented under the steps they follow from" width="420"> | **See how it fits together.** `g` shows which step each question or decision came from; `graph --html` exports it as an offline page. [More](docs/how-to/evidence-and-graphs.md) |
+| <img src="docs/assets/screens/rail.svg" alt="Rail view: items in transcript order, with one lane per workstream" width="420"> | **Follow separate threads.** Sessions that juggle several things are split into workstreams; the rail (`v`) shows them over time. [More](docs/reading-the-panel.md#workstreams-and-focus) |
+| <img src="docs/assets/screens/todos.svg" alt="Personal todo list with one reminder selected" width="420"> | **Keep your own reminders.** `a` adds a todo in your words; the summary can only mark it done, with evidence. [More](docs/how-to/personal-todos.md) |
 
-<details>
-<summary><strong>Explore the rail view</strong></summary>
+Every key is listed in the [keys reference](docs/reference/keys.md); the footer always shows the most useful ones.
 
-<br>
-<img src="assets/readme/rail.svg" alt="Illustrative rail view with a trunk and two workstream lanes, showing plan steps, questions, and decisions in transcript order." width="800">
+## Good to know
 
-The rail arranges summary items by transcript turn and workstream. A workstream is a thread of work, such as reviewing a PR; it is separate from a Git branch. Narrow panes fold extra lanes into a count. This illustration uses fictional content.
+- **Cost.** Each summary is one call to your agent's CLI, covering only the new turns, at most once every 30 seconds. The footer shows the count and the reported cost. [Spend less, or none](docs/how-to/run-without-models.md).
+- **Privacy.** Glance has no service of its own. Conversation excerpts go only to the summary CLI you choose. [Details](docs/explanation/privacy.md).
+- **Accuracy.** Summaries are interpretations and can be wrong. The evidence drawer is there to check them.
+- **Compatibility.** Windows, macOS and Linux are tested in CI; live testing with each agent's latest version is still in progress. [Compatibility](docs/explanation/compatibility.md).
 
-</details>
+## Documentation
 
-## Designed to stay out of the way
-
-- Transcript metadata supplies the title, branch, linked PR, and other available fields.
-- A background model pass updates the summary after activity settles, while herdr supplies working/idle status.
-- Versioned caches live in `~/.glance/`; a heuristic provides initial context when no cache exists.
-- `--no-model` displays metadata and cached context without starting a summary invocation.
-
-Summaries are interpretations and can be incomplete or wrong. Use the evidence drawer to check the conversation. Read [privacy and data handling](docs/privacy.md) for what is read, saved, and passed to your summary provider.
-
-## Find your way around
-
-| Guide | What you will find |
-| :--- | :--- |
-| [Usage](docs/usage.md) | Attach, sessions, focus, configuration, and files |
-| [Troubleshooting](docs/troubleshooting.md) | Empty panels, hooks, model failures, and recovery |
-| [Architecture](docs/architecture.md) | Transcript → summary → terminal, and module boundaries |
-| [Roadmap](ROADMAP.md) | Shipped capabilities and planned milestones |
-| [Implementation checklist](docs/implementation-checklist.md) | Detailed work plan and validation gates |
-| [Changelog](CHANGELOG.md) | Changes by version |
-| [Release notes](docs/release-notes.md) | Unreleased feature and reliability changes |
-| [Compatibility](docs/compatibility.md) | OS, terminal and agent validation coverage |
-| [Agent adapters](docs/agent-transcripts.md) | Discovery, formats and custom transcript paths |
-| [Cursor](docs/cursor.md) | IDE hooks, CLI capture and export workflows |
-| [Summary providers](docs/summary-providers.md) | Provider selection, models and helper restrictions |
-| [Distribution](docs/distribution.md) | Archives, installers and maintainer release steps |
+| Start | Do | Look up | Understand |
+| --- | --- | --- | --- |
+| [Getting started](docs/getting-started.md) | [herdr](docs/how-to/herdr.md) · [Other terminals](docs/how-to/other-terminals.md) | [Command line](docs/reference/cli.md) | [How it works](docs/explanation/how-it-works.md) |
+| [Reading the panel](docs/reading-the-panel.md) | [Other agents](docs/how-to/other-agents.md) · [Cursor](docs/how-to/cursor.md) | [Keys](docs/reference/keys.md) | [Privacy](docs/explanation/privacy.md) |
+| [Glossary](docs/glossary.md) | [Todos](docs/how-to/personal-todos.md) · [Summaries](docs/how-to/summary-providers.md) | [Configuration](docs/reference/configuration.md) | [Compatibility](docs/explanation/compatibility.md) |
+| [Troubleshooting](docs/troubleshooting.md) | [No model calls](docs/how-to/run-without-models.md) · [Windows](docs/how-to/windows.md) | [Files and environment](docs/reference/files-and-environment.md) | [Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md) |
 
 ## Contributing
 
-Bug reports, focused improvements, and documentation fixes are welcome. Start with the [contribution guide](CONTRIBUTING.md). Please use [private reporting](SECURITY.md) for security concerns.
+Bug reports, focused fixes and documentation improvements are welcome. Start with the [contribution guide](CONTRIBUTING.md), and report security issues privately through [SECURITY.md](SECURITY.md).
 
 Licensed under [Apache 2.0](LICENSE).

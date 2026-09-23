@@ -1,9 +1,9 @@
 # Roadmap
 
-[User guide](docs/usage.md) · [Implementation checklist](docs/implementation-checklist.md) · [Compatibility](docs/compatibility.md)
+[Documentation](docs/README.md) · [Implementation checklist](docs/maintainers/implementation-checklist.md) · [Compatibility](docs/explanation/compatibility.md)
 
-The following capabilities are implemented in the current development PRs.
-They are unreleased until those PRs are merged and a version is published.
+The following capabilities are merged on `main` and unreleased until a version is
+published.
 The compatibility matrix distinguishes fixture/process checks from live use.
 
 ## Implemented
@@ -27,7 +27,7 @@ The compatibility matrix distinguishes fixture/process checks from live use.
 
 ## Release and live validation work
 
-- Merge the reviewed PRs and choose the next version/changelog.
+- Choose the next version from the changelog.
 - Publish a tagged release after CI and installer validation.
 - Configure the crates.io token and protected environment, then perform the
   reviewed manual publish. Create a Homebrew tap if tap distribution is desired;
@@ -41,5 +41,5 @@ The compatibility matrix distinguishes fixture/process checks from live use.
   become available.
 
 Cursor IDE uses visible hook events and exports. Historical private-database
-ingestion is not an advertised capability. See [Cursor](docs/cursor.md) for
+ingestion is not an advertised capability. See [Follow Cursor](docs/how-to/cursor.md) for
 capture scope and limitations.
