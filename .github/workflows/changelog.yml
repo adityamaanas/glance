@@ -1,0 +1,43 @@
+# Require a CHANGELOG.md entry when a pull request changes the program.
+#
+# Changes under src/ need a line under "## Unreleased" in CHANGELOG.md, written
+# for users. Internal-only changes (refactors, tests, CI) can skip it by adding
+# the `no-changelog` label; the check re-runs when labels change.
+name: Changelog
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  entry:
+    name: Changelog entry
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require a CHANGELOG.md entry for program changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SKIP: ${{ contains(github.event.pull_request.labels.*.name, 'no-changelog') }}
+        run: |
+          if [ "$SKIP" = "true" ]; then
+            echo "Skipped: the pull request has the no-changelog label."
+            exit 0
+          fi
+          changed=$(git diff --name-only "$BASE_SHA...$HEAD_SHA")
+          if ! printf '%s\n' "$changed" | grep -q '^src/'; then
+            echo "No program changes under src/; no entry needed."
+            exit 0
+          fi
+          if printf '%s\n' "$changed" | grep -qx 'CHANGELOG.md'; then
+            echo "CHANGELOG.md is updated."
+            exit 0
+          fi
+          echo "::error file=CHANGELOG.md::This PR changes src/ but not CHANGELOG.md. Add a user-facing line under '## Unreleased', or add the 'no-changelog' label if users will not notice the change."
+          exit 1

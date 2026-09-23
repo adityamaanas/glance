@@ -54,7 +54,8 @@ A change is not done until its documentation is:
 - **Same PR.** Commands, keys, settings, files and behavior change together with their docs. The PR template has a checkbox for this.
 - **Generated reference.** [`reference/cli.md`](reference/cli.md) is generated from `--help` and checked by `tests/cli_reference.rs`. Regenerate it with `GLANCE_UPDATE_DOCS=1 cargo test --test cli_reference`. A unit test fails if a `config.json` setting is missing from [`reference/configuration.md`](reference/configuration.md).
 - **Checked links.** CI runs [`scripts/check-docs.py`](../scripts/check-docs.py), which fails on broken relative links, missing anchors and missing images.
-- **One changelog.** User-visible changes go in [`CHANGELOG.md`](../CHANGELOG.md) under "Unreleased", written for users (what changed for them), not reviewers.
+- **One changelog.** User-visible changes go in [`CHANGELOG.md`](../CHANGELOG.md) under "Unreleased", written for users (what changed for them), not reviewers. CI fails a PR that changes `src/` without touching the changelog; add the `no-changelog` label for internal-only changes such as refactors and tests.
+- **Versions change only at release time**, in a dedicated release PR (see [releasing](maintainers/releasing.md#publish-a-release)), never in feature PRs.
 
 ## 6. Later, at first release
 
