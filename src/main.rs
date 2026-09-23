@@ -457,6 +457,11 @@ impl App {
         }
     }
 
+    /// Whether a selectable item list (and therefore mouse selection) is open.
+    fn navigating(&self) -> bool {
+        self.inspect || self.graph
+    }
+
     fn focus(&self) -> Focus {
         if !self.cache.summary.is_multi() {
             return Focus::All;
@@ -671,7 +676,6 @@ type Term = ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout
 fn init_terminal() -> Result<Term> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
-    stdout().execute(EnableMouseCapture)?;
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore_terminal();
@@ -690,12 +694,15 @@ fn restore_terminal() {
 
 fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<()> {
     draw(app, terminal)?;
+    // Capture the mouse only while a selectable list is open, so the normal panel
+    // keeps the terminal's own text selection and scrollback.
+    let mut mouse_captured = false;
     loop {
         let msg = rx.recv_timeout(Duration::from_secs(1)).unwrap_or(Msg::Tick);
         let previous_view = (app.selection, app.inspect, app.graph, app.focus());
         match msg {
             Msg::Mouse(mouse) => {
-                if app.inspect || app.graph {
+                if app.navigating() {
                     match mouse.kind {
                         MouseEventKind::ScrollDown => {
                             app.selection = app.selection.saturating_add(1).min(
@@ -846,6 +853,15 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
         );
         if previous_view != (app.selection, app.inspect, app.graph, app.focus()) {
             app.scroll = 0;
+        }
+        if app.navigating() != mouse_captured {
+            mouse_captured = app.navigating();
+            let mut out = stdout();
+            let _ = if mouse_captured {
+                out.execute(EnableMouseCapture).map(|_| ())
+            } else {
+                out.execute(DisableMouseCapture).map(|_| ())
+            };
         }
         maybe_summarize(app);
         draw(app, terminal)?;
