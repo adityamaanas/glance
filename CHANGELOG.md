@@ -9,6 +9,10 @@
 - Recover truncated or rewritten transcripts, buffer incomplete UTF-8, and retain compact tool outcomes.
 - Validate cached turn fingerprints; cache format 3 rebuilds older summaries once.
 - Refresh herdr's current status when subscribing again after a disconnect.
+- Evidence drawer (`e`/Enter) and relationship graph (`g`); `graph --html` exports an offline view.
+- Up/Down now select summary items and open the evidence drawer; use `j`/`k` to scroll the panel.
+- Mouse capture is enabled only while the evidence, graph or todo lists are open, so text
+  selection and terminal scrollback keep working in the normal panel.
 
 ## 0.2.0
 

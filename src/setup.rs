@@ -10,13 +10,17 @@ const MATCHER: &str = "startup|resume|clear|fork";
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Config {
     /// "accepted" or "declined" once the user has answered the hook offer.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hook_offer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_model: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_retention_days: Option<u64>,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
@@ -208,6 +212,16 @@ pub fn record_offer(answer: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_config_omits_unset_options_and_keeps_unknown_keys() {
+        let cfg: Config =
+            serde_json::from_value(json!({"hook_offer":"accepted","custom":1})).unwrap();
+        assert_eq!(
+            serde_json::to_value(&cfg).unwrap(),
+            json!({"hook_offer":"accepted","custom":1})
+        );
+    }
 
     #[test]
     fn removal_preserves_grouped_hooks_and_substring_matches() {
