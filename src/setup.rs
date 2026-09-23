@@ -15,6 +15,12 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_harness: Option<crate::harness::Kind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_fallback: Option<crate::harness::Kind>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub summary_models: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh_seconds: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,

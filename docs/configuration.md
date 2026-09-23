@@ -14,7 +14,7 @@ Glance reads `~/.glance/config.json`. Invalid configuration is reported on norma
 }
 ```
 
-- Model precedence: `--model`, `GLANCE_MODEL`, configuration file, built-in default.
+- Model precedence: `--model`, `summary_models[agent]`, then for Claude only `GLANCE_MODEL`, `model` in this file and the built-in default. See [summary providers](summary-providers.md).
 - `--refresh-seconds` overrides the configuration interval between summary calls. Growth must also settle and herdr must not report active work. `r` bypasses the interval for a manual refresh.
 - `no_model` or `--no-model` prevents model invocation, including the `summarize` command. The panel still reads local metadata and caches.
 - `prompt` appends instructions to Glance's summary prompt.
