@@ -228,6 +228,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_setting_is_documented_in_the_configuration_reference() {
+        let reference = include_str!("../docs/reference/configuration.md");
+        let full = Config {
+            hook_offer: Some(String::new()),
+            model: Some(String::new()),
+            summary_harness: Some(crate::harness::Kind::Claude),
+            summary_fallback: Some(crate::harness::Kind::Claude),
+            summary_models: [(String::new(), String::new())].into(),
+            refresh_seconds: Some(0),
+            prompt: Some(String::new()),
+            no_model: true,
+            cache_retention_days: Some(0),
+            sidebar_metadata: true,
+            extra: Default::default(),
+        };
+        let value = serde_json::to_value(full).unwrap();
+        for key in value.as_object().unwrap().keys() {
+            assert!(
+                reference.contains(&format!("| `{key}` |")),
+                "add `{key}` to docs/reference/configuration.md"
+            );
+        }
+    }
+
+    #[test]
     fn saved_config_omits_unset_options_and_keeps_unknown_keys() {
         let cfg: Config =
             serde_json::from_value(json!({"hook_offer":"accepted","custom":1})).unwrap();

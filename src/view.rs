@@ -831,7 +831,11 @@ fn footer(s: &ViewState, width: u16) -> Paragraph<'static> {
             })
             .unwrap_or_default();
         spans.push(Span::styled(
-            format!(" · {} calls{cost}", usage.calls),
+            format!(
+                " · {} call{}{cost}",
+                usage.calls,
+                if usage.calls == 1 { "" } else { "s" }
+            ),
             Style::default().fg(DIM),
         ));
     }

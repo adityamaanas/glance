@@ -39,31 +39,32 @@ use view::Focus;
 #[command(
     name = "glance-panel",
     version,
-    about = "glance: live orientation panel for a Claude Code session"
+    about = "Glance: a live orientation panel beside your coding-agent session",
+    long_about = "Glance: a live orientation panel beside your coding-agent session.\n\nRun without a command to open the panel. Inside herdr it follows the neighbouring agent pane; elsewhere pass --session, --cwd or --transcript, or pick from a list."
 )]
 struct Cli {
-    /// herdr pane id of the Claude Code session to follow (default: the pane next to this one).
+    /// herdr pane id of the agent session to follow (default: the pane next to this one).
     #[arg(long)]
     pane: Option<String>,
-    /// Claude Code session id to follow directly (no herdr needed).
+    /// Session ID to follow directly (no herdr needed).
     #[arg(long)]
     session: Option<String>,
     /// Follow the most recently updated session for this project.
     #[arg(long, conflicts_with_all = ["session", "pane"])]
     cwd: Option<std::path::PathBuf>,
-    /// Transcript format (herdr sessions can detect this automatically).
+    /// Agent whose transcript to read (default: claude; herdr sessions are detected automatically).
     #[arg(long, global = true, value_enum)]
     harness: Option<harness::Kind>,
-    /// Follow a transcript/export in a custom location.
+    /// Read this transcript or export file instead of searching the agent's default location.
     #[arg(long, global = true)]
     transcript: Option<std::path::PathBuf>,
-    /// Never call the model; show free fields and the cached summary only.
+    /// Never call a model; show transcript fields, cached summaries and todos only.
     #[arg(long, global = true)]
     no_model: bool,
     /// Report the current step and progress to herdr's sidebar.
     #[arg(long)]
     sidebar: bool,
-    /// Summary model (overrides GLANCE_MODEL and config.json).
+    /// Model for the requested summary agent (overrides summary_models; never passed to a fallback).
     #[arg(long, global = true)]
     model: Option<String>,
     /// Agent CLI used for summaries (default: the transcript's agent).
@@ -91,11 +92,13 @@ enum Cmd {
     CursorStream,
     /// Print normalized transcript turns without calling a model.
     Transcript {
+        /// Session ID to read.
         #[arg(long)]
         session: String,
     },
-    /// Install or remove session and turn-end hooks for Claude Code.
+    /// Install or remove hooks: Claude Code session and turn-end hooks, or Cursor capture with --harness cursor.
     Setup {
+        /// Remove Glance's hooks instead of installing them.
         #[arg(long)]
         remove: bool,
         /// Accepted for unattended installation; invoking setup already opts in.
@@ -104,12 +107,16 @@ enum Cmd {
     },
     /// Choose a local session and print its ID.
     Pick {
+        /// Only sessions whose recorded working directory is this project.
         #[arg(long)]
         cwd: Option<std::path::PathBuf>,
+        /// Only sessions whose ID, title or directory contains this text.
         #[arg(long)]
         query: Option<String>,
+        /// Print the most recently updated match without asking.
         #[arg(long, conflicts_with = "list")]
         latest: bool,
+        /// Print every match as JSON.
         #[arg(long)]
         list: bool,
     },
@@ -117,13 +124,16 @@ enum Cmd {
     Todo {
         /// Text to append; omit to list todos.
         text: Option<String>,
+        /// Session ID (default: the session in this herdr pane).
         #[arg(long)]
         session: Option<String>,
         /// Todo ID whose status should change.
         #[arg(long, requires = "status", conflicts_with_all = ["text", "delete", "carry_from"])]
         set: Option<String>,
+        /// New status for --set.
         #[arg(long, value_enum, requires = "set")]
         status: Option<todos::Status>,
+        /// Todo ID to delete.
         #[arg(long, conflicts_with_all = ["text", "set", "carry_from"])]
         delete: Option<String>,
         /// Explicitly copy reminders from another session as pending items.
@@ -132,26 +142,34 @@ enum Cmd {
     },
     /// Show cached item relationships, or export a standalone HTML graph.
     Graph {
+        /// Session ID whose cached summary to use.
         #[arg(long)]
         session: String,
+        /// Write an offline HTML graph (default file: glance-graph.html).
         #[arg(long, num_args = 0..=1, default_missing_value = "glance-graph.html")]
         html: Option<std::path::PathBuf>,
+        /// Open the HTML file in the default browser.
         #[arg(long, requires = "html")]
         open: bool,
     },
     /// Remove old summary caches; personal configuration and todos are preserved.
     CacheClean {
+        /// Remove caches not updated for this many days.
         #[arg(long, default_value_t = 30)]
         older_than_days: u64,
+        /// List what would be removed without deleting it.
         #[arg(long)]
         dry_run: bool,
     },
-    /// From inside a Claude Code pane: split right and start the panel there.
+    /// Split the terminal (herdr, tmux or Zellij) and start the panel in the new pane.
     Attach {
+        /// Multiplexer to use; auto detects herdr, then tmux, then Zellij.
         #[arg(long, value_enum, default_value_t = placement::Backend::Auto)]
         backend: placement::Backend,
+        /// Session ID for tmux/Zellij (default: the latest session in --cwd).
         #[arg(long)]
         session: Option<String>,
+        /// Project directory for tmux/Zellij (default: the current directory).
         #[arg(long)]
         cwd: Option<std::path::PathBuf>,
         /// Fraction of the width the new pane takes.
@@ -161,17 +179,18 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
-    /// Print the summary JSON for a session and exit (development aid).
+    /// Summarize a whole session once, save the cache and print the summary JSON.
     Summarize {
+        /// Session ID to summarize.
         #[arg(long)]
         session: String,
     },
-    /// Claude Code SessionStart hook entry point (reads the hook JSON on stdin, always exits 0).
+    /// Claude Code hook entry point (reads hook JSON on stdin, always exits 0). Prefer `setup`.
     Hook {
-        /// Register this binary as the SessionStart hook in ~/.claude/settings.json.
+        /// Legacy: register hooks (same as `setup`).
         #[arg(long)]
         install: bool,
-        /// Remove the glance SessionStart hook from ~/.claude/settings.json.
+        /// Legacy: remove hooks (same as `setup --remove`).
         #[arg(long)]
         uninstall: bool,
     },
