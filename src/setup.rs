@@ -22,7 +22,7 @@ pub struct Config {
     pub no_model: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_retention_days: Option<u64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sidebar_metadata: bool,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,

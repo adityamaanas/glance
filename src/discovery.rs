@@ -35,18 +35,36 @@ pub fn sessions(cwd: Option<&Path>, query: Option<&str>) -> Result<Vec<Session>>
     )
 }
 
+/// Existing project folders for `cwd`, as written and canonicalized (symlinks, `..`).
+fn project_dirs(root: &Path, cwd: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = [Some(cwd.to_path_buf()), std::fs::canonicalize(cwd).ok()]
+        .into_iter()
+        .flatten()
+        .map(|p| root.join(crate::transcript::project_slug(&p.to_string_lossy())))
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.dedup();
+    dirs
+}
+
 fn scan(root: &Path, cwd: Option<&Path>, query: Option<&str>) -> Result<Vec<Session>> {
-    let projects = match std::fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
-        Err(e) => return Err(e).context("read session projects"),
+    // With a working directory, read only its project folder when one exists; each
+    // transcript costs up to 128 KiB of reads, so a full scan grows with history.
+    let projects = match cwd.map(|c| project_dirs(root, c)).filter(|d| !d.is_empty()) {
+        Some(dirs) => dirs,
+        None => match std::fs::read_dir(root) {
+            Ok(entries) => entries
+                .flatten()
+                .filter(|p| p.file_type().is_ok_and(|t| t.is_dir()))
+                .map(|p| p.path())
+                .collect(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(e) => return Err(e).context("read session projects"),
+        },
     };
     let mut sessions = Vec::new();
-    for project in projects.flatten() {
-        if !project.file_type().is_ok_and(|t| t.is_dir()) {
-            continue;
-        }
-        let Ok(files) = std::fs::read_dir(project.path()) else {
+    for project in projects {
+        let Ok(files) = std::fs::read_dir(&project) else {
             continue;
         };
         for file in files.flatten() {
@@ -200,5 +218,18 @@ mod tests {
         assert_eq!(found[0].id, "one");
         assert!(!found[0].title.contains('\u{1b}'));
         assert_eq!(scan(dir.path(), None, None).unwrap().len(), 2);
+        // A matching project folder is read directly, without scanning the others.
+        let own = dir
+            .path()
+            .join(crate::transcript::project_slug(&cwd.to_string_lossy()));
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(
+            own.join("three.jsonl"),
+            serde_json::json!({"cwd":cwd,"customTitle":"Own folder"}).to_string() + "\n",
+        )
+        .unwrap();
+        let found = scan(dir.path(), Some(&cwd), None).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, "three");
     }
 }

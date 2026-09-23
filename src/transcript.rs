@@ -45,15 +45,18 @@ pub fn expected_path(cwd: &str, session_id: &str) -> Result<PathBuf> {
     expected_path_in(&claude_dir()?, cwd, session_id)
 }
 
+/// Claude Code's project directory name: every non-alphanumeric character becomes '-'.
+pub fn project_slug(cwd: &str) -> String {
+    cwd.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
 fn expected_path_in(root: &Path, cwd: &str, session_id: &str) -> Result<PathBuf> {
     validate_session_id(session_id)?;
-    let slug: String = cwd
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
     Ok(root
         .join("projects")
-        .join(slug)
+        .join(project_slug(cwd))
         .join(format!("{session_id}.jsonl")))
 }
 
