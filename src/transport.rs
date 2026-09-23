@@ -21,7 +21,12 @@ impl Connection {
         #[cfg(windows)]
         stream.set_nonblocking(true)?;
         #[cfg(not(windows))]
-        stream.set_send_timeout(Some(SEND_TIMEOUT))?;
+        if let Err(e) = stream.set_send_timeout(Some(SEND_TIMEOUT)) {
+            // See `line`: macOS reports EINVAL if the peer already closed.
+            if e.kind() != io::ErrorKind::InvalidInput {
+                return Err(e);
+            }
+        }
         Ok(Self {
             reader: BufReader::new(stream),
             pending: Vec::new(),
@@ -55,9 +60,17 @@ impl Connection {
                 return Err(io::ErrorKind::TimedOut.into());
             }
             #[cfg(not(windows))]
-            self.reader
+            if let Err(e) = self
+                .reader
                 .get_ref()
-                .set_recv_timeout(Some((deadline - now).max(Duration::from_millis(1))))?;
+                .set_recv_timeout(Some((deadline - now).max(Duration::from_millis(1))))
+            {
+                // macOS rejects socket options with EINVAL once the peer has closed the
+                // connection. A read cannot block then, so continue and read what is left.
+                if e.kind() != io::ErrorKind::InvalidInput {
+                    return Err(e);
+                }
+            }
             match self.reader.fill_buf() {
                 // Byte-mode Windows pipes in NOWAIT mode return zero when temporarily empty.
                 Ok([]) if cfg!(windows) => backoff(&mut idle, deadline),

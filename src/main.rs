@@ -38,6 +38,8 @@ use view::Focus;
 #[derive(Parser)]
 #[command(
     name = "glance-panel",
+    // Fixed so help reads the same on every platform (not "glance-panel.exe").
+    bin_name = "glance-panel",
     version,
     about = "Glance: a live orientation panel beside your coding-agent session",
     long_about = "Glance: a live orientation panel beside your coding-agent session.\n\nRun without a command to open the panel. Inside herdr it follows the neighbouring agent pane; elsewhere pass --session, --cwd or --transcript, or pick from a list."
