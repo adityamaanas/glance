@@ -48,15 +48,18 @@ pub fn expected_path(cwd: &str, session_id: &str) -> Result<PathBuf> {
     expected_path_in(&claude_dir()?, cwd, session_id)
 }
 
+/// Claude Code's project directory name: every non-alphanumeric character becomes '-'.
+pub fn project_slug(cwd: &str) -> String {
+    cwd.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
 fn expected_path_in(root: &Path, cwd: &str, session_id: &str) -> Result<PathBuf> {
     validate_session_id(session_id)?;
-    let slug: String = cwd
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
     Ok(root
         .join("projects")
-        .join(slug)
+        .join(project_slug(cwd))
         .join(format!("{session_id}.jsonl")))
 }
 
@@ -332,15 +335,19 @@ impl Transcript {
         })
     }
 
+    /// Identifies the first `count` turns. Persisted in caches and todo files, so it
+    /// must not depend on the toolchain's unspecified `DefaultHasher` algorithm.
     pub fn fingerprint(&self, count: usize) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        let mut hash = StableHasher::new();
         for turn in self.turns.iter().take(count) {
-            match turn {
-                Turn::User(s) => (0, s).hash(&mut hash),
-                Turn::Assistant(s) => (1, s).hash(&mut hash),
-                Turn::Tool(s) => (2, s).hash(&mut hash),
-            }
+            let (tag, text) = match turn {
+                Turn::User(s) => (0u8, s),
+                Turn::Assistant(s) => (1, s),
+                Turn::Tool(s) => (2, s),
+            };
+            hash.write(&[tag]);
+            hash.write(&(text.len() as u64).to_le_bytes());
+            hash.write(text.as_bytes());
         }
         hash.finish()
     }
@@ -389,6 +396,33 @@ fn strip_wrappers(text: &str) -> String {
         }
     }
     s.trim().to_string()
+}
+
+/// 64-bit FNV-1a: a fixed algorithm whose output is safe to store on disk.
+#[derive(Clone, Copy)]
+pub struct StableHasher(u64);
+
+impl StableHasher {
+    pub fn new() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+
+    pub fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 ^= u64::from(*byte);
+            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+
+    pub fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+impl Default for StableHasher {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub fn clip(s: &str, max: usize) -> String {
@@ -460,6 +494,20 @@ mod tests {
         tr.read_new().unwrap();
         assert!(matches!(&tr.turns[0], Turn::User(s) if s == "alt"));
         assert_eq!(tr.revision, 2);
+    }
+
+    #[test]
+    fn fingerprint_is_a_fixed_function_of_turn_boundaries() {
+        let mut tr = Transcript::open(Path::new("unused"));
+        tr.turns = vec![Turn::User("ab".into()), Turn::Assistant("c".into())];
+        let mut other = Transcript::open(Path::new("unused"));
+        other.turns = vec![Turn::User("a".into()), Turn::Assistant("bc".into())];
+        assert_ne!(tr.fingerprint(2), other.fingerprint(2));
+        assert_eq!(tr.fingerprint(0), StableHasher::new().finish());
+        // Pinned value: changing it silently invalidates every stored cache and todo.
+        let mut known = StableHasher::new();
+        known.write(b"glance");
+        assert_eq!(known.finish(), 0xa7f3_0ac9_d321_8e91);
     }
 
     #[test]
