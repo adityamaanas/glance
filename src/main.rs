@@ -1,5 +1,6 @@
 //! glance: a live orientation panel for one Claude Code session, meant for a herdr split pane.
 
+mod cursor;
 mod discovery;
 mod evidence;
 mod harness;
@@ -73,6 +74,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Record a Cursor hook event (internal; always exits successfully).
+    #[command(hide = true)]
+    CursorHook {
+        #[arg(long)]
+        state_dir: Option<std::path::PathBuf>,
+    },
+    /// Capture Cursor CLI stream-json from stdin, forwarding it to stdout.
+    CursorStream,
     /// Print normalized transcript turns without calling a model.
     Transcript {
         #[arg(long)]
@@ -172,6 +181,10 @@ enum Msg {
 
 fn main() -> Result<()> {
     let mut cli = Cli::parse();
+    if let Some(Cmd::CursorHook { state_dir }) = &cli.command {
+        cursor::hook(state_dir.as_deref());
+        return Ok(());
+    }
     let cfg = if matches!(
         cli.command,
         Some(Cmd::Hook {
@@ -197,6 +210,8 @@ fn main() -> Result<()> {
         }
     }
     match cli.command {
+        Some(Cmd::CursorHook { .. }) => unreachable!(),
+        Some(Cmd::CursorStream) => cursor::stream(),
         Some(Cmd::Transcript { session }) => {
             let mut tr = Transcript::open_for(
                 &harness::locate(source.kind, &session, source.path)?,
@@ -213,6 +228,15 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some(Cmd::Setup { remove, .. }) => {
+            if source.kind == harness::Kind::Cursor {
+                println!("{}", cursor::setup(remove)?);
+                return Ok(());
+            }
+            if source.kind != harness::Kind::Claude {
+                bail!(
+                    "hook setup supports Claude and Cursor; other agents use transcript discovery"
+                );
+            }
             println!(
                 "{}",
                 if remove {
@@ -952,7 +976,7 @@ fn run(cli: Cli) -> Result<()> {
         error: None,
         scroll: 0,
         no_model: cli.no_model,
-        offer: setup::should_offer(),
+        offer: kind == harness::Kind::Claude && setup::should_offer(),
         focus_override: None,
         pinned: false,
         rail: false,
@@ -1427,7 +1451,7 @@ fn maybe_summarize(app: &mut App) {
         .last_growth
         .map(|t| t.elapsed() >= Duration::from_secs(2))
         .unwrap_or(true)
-        || signals::matches(&app.session_id, &app.tr.path);
+        || signals::matches(&app.storage_key(), &app.tr.path);
     if !settled {
         return;
     }

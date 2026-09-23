@@ -33,7 +33,7 @@ opencode export <id> > opencode-session.json
 glance-panel --harness opencode --transcript opencode-session.json transcript --session <id>
 ```
 
-For Cursor CLI, save its documented `--output-format stream-json` output and follow that file with `--harness cursor --transcript <path> --session <id>`. The CLI's private `store.db` format is not read. Live Cursor hook setup is handled by the Cursor integration change that follows this adapter foundation.
+For Cursor CLI, save its documented `--output-format stream-json` output and follow that file with `--harness cursor --transcript <path> --session <id>`. The CLI's private `store.db` format is not read. For live IDE hooks and CLI stream capture, see [Cursor setup](cursor.md).
 
 Environment overrides: `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GLANCE_GEMINI_HOME`, `PI_CODING_AGENT_SESSION_DIR`, `GLANCE_CURSOR_HOME`, `OPENCODE_DB`, and `XDG_DATA_HOME` for OpenCode's default data location. Glance-owned data remains under `GLANCE_HOME` or `~/.glance`.
 
