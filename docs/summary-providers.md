@@ -26,7 +26,7 @@ In `$GLANCE_HOME/config.json` (default `~/.glance/config.json`):
 }
 ```
 
-The model precedence is `--model`, `GLANCE_MODEL`, `model` in config, then `summary_models[backend]`. Claude retains Glance's existing default; other backends use their CLI default when no override is set. Choose model IDs available to your account. Omit `summary_harness` to follow each transcript's agent automatically. Set `summary_fallback` only if you want the missing-executable fallback described above.
+Model precedence: `--model` applies to the requested summary agent, then `summary_models[backend]`. `GLANCE_MODEL` and `model` in config predate other agents and apply to Claude only, followed by Glance's built-in Claude default; other backends use their CLI default when no override is set. A missing-executable fallback never inherits `--model`; it uses its own `summary_models` entry or default. Choose model IDs available to your account. Omit `summary_harness` to follow each transcript's agent automatically. Set `summary_fallback` only if you want the missing-executable fallback described above.
 
 Override executable discovery with `GLANCE_CLAUDE_BIN`, `GLANCE_CODEX_BIN`, `GLANCE_GEMINI_BIN`, `GLANCE_PI_BIN`, `GLANCE_OPENCODE_BIN`, or `GLANCE_CURSOR_BIN`. These name executable paths, not shell command strings. The default Cursor executable is `agent`; point `GLANCE_CURSOR_BIN` at `cursor-agent` if that is the installed name.
 
@@ -40,7 +40,7 @@ These controls use the agent's documented CLI interfaces; they depend on that CL
 
 Claude and Codex use schema-aware output. Other providers receive the same schema in the prompt, and Glance parses their final response or visible output events. CLI failures and invalid JSON are reported. Cost is shown only when the CLI reports it; an unavailable estimate is not zero.
 
-Claude, Codex and pi request ephemeral sessions. Gemini, OpenCode and Cursor may retain helper history according to their own settings. Cursor takes its prompt as a process argument; very large prompts exceed platform limits, especially Windows. Glance reports that limit rather than dropping content; select another summary backend in that case.
+Claude, Codex and pi request ephemeral sessions. Gemini, OpenCode and Cursor may retain helper history according to their own settings. Cursor takes its prompt as a process argument, so on a shared machine other local users who can list processes can read transcript excerpts while the summary runs; choose another `--summary-harness` if that matters. Very large prompts also exceed platform limits, especially Windows. Glance reports that limit rather than dropping content; select another summary backend in that case.
 
 Windows/Linux tests launch a compiled mock CLI for every provider, validate input delivery and output parsing, and check explicit fallback and no-model behavior. They do not call paid models. Live authentication, model availability and installed-version behavior still need a smoke run with the desired CLI.
 

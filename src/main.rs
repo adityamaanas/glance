@@ -908,6 +908,11 @@ impl App {
         }
     }
 
+    /// Whether a selectable item list (and therefore mouse selection) is open.
+    fn navigating(&self) -> bool {
+        self.inspect || self.graph || self.todo_mode
+    }
+
     fn focus(&self) -> Focus {
         if !self.cache.summary.is_multi() {
             return Focus::All;
@@ -1148,10 +1153,7 @@ type Term = ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout
 
 fn init_terminal() -> Result<Term> {
     enable_raw_mode()?;
-    if let Err(e) = stdout()
-        .execute(EnterAlternateScreen)
-        .and_then(|out| out.execute(EnableMouseCapture))
-    {
+    if let Err(e) = stdout().execute(EnterAlternateScreen) {
         restore_terminal();
         return Err(e.into());
     }
@@ -1177,6 +1179,9 @@ fn restore_terminal() {
 
 fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<()> {
     draw(app, terminal)?;
+    // Capture the mouse only while a selectable list is open, so the normal panel
+    // keeps the terminal's own text selection and scrollback.
+    let mut mouse_captured = false;
     loop {
         let msg = rx.recv_timeout(Duration::from_secs(1)).unwrap_or(Msg::Tick);
         let previous_view = (
@@ -1188,7 +1193,7 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
         );
         match msg {
             Msg::Mouse(mouse) => {
-                if app.inspect || app.graph || app.todo_mode {
+                if app.navigating() {
                     match mouse.kind {
                         MouseEventKind::ScrollDown => {
                             app.selection = app
@@ -1386,6 +1391,15 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
             )
         {
             app.scroll = 0;
+        }
+        if app.navigating() != mouse_captured {
+            mouse_captured = app.navigating();
+            let mut out = stdout();
+            let _ = if mouse_captured {
+                out.execute(EnableMouseCapture).map(|_| ())
+            } else {
+                out.execute(DisableMouseCapture).map(|_| ())
+            };
         }
         maybe_summarize(app);
         if app.sidebar

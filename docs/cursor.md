@@ -33,7 +33,7 @@ agent -p --output-format stream-json "Review the current changes" | glance-panel
 glance-panel --harness cursor --cwd /path/to/project
 ```
 
-`cursor-stream` prints the conversation ID to stderr, forwards the original stream unchanged to stdout, and saves normalized visible turns. It does not launch an agent itself. Avoid `--stream-partial-output`; the importer expects complete messages. The final result does not duplicate the assistant response. Replaying a saved CLI stream appends it again, so use `--transcript` to read a saved stream without importing it.
+`cursor-stream` prints the conversation ID to stderr, forwards the original stream unchanged to stdout, and saves normalized visible turns. Forwarding never depends on capture: an unreadable, oversized or out-of-session record is still forwarded, and the capture problem is reported once on stderr. It does not launch an agent itself. Avoid `--stream-partial-output`; the importer expects complete messages. The final result does not duplicate the assistant response. Replaying a saved CLI stream appends it again, so use `--transcript` to read a saved stream without importing it.
 
 ## Data and limits
 
