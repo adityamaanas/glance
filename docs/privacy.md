@@ -10,7 +10,8 @@ visible user, assistant and tool content and exclude recognized internal
 reasoning fields; this is not a secret-redaction system.
 
 Optional Cursor IDE hooks capture new visible events into Glance-owned files.
-`cursor-stream` captures CLI events while forwarding stdout. These routes do
+`cursor-stream` captures CLI events while forwarding stdout; forwarding never
+depends on capture succeeding. These routes do
 not automatically import historical IDE chats or read Cursor's private database.
 See [Cursor](cursor.md).
 

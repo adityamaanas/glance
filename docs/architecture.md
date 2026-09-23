@@ -46,10 +46,13 @@ flowchart LR
 5. Validate references, reject stale generations, apply eligible todo status
    updates and atomically save the cache.
 
-Cache fingerprints tie processed turns to visible transcript content. Claude
-also verifies consumed bytes when reading a change, detecting earlier rewrites
-with an unchanged tail. Rewinds and session changes invalidate in-flight work.
-Prefix verification costs a sequential read on transcript changes.
+Cache fingerprints (a fixed FNV-1a hash, stable across Rust releases) tie
+processed turns to visible transcript content. Before reading an append, JSONL
+readers compare the last 4 KiB and one 4 KiB sample per MiB of consumed bytes,
+detecting earlier rewrites with an unchanged tail at about 0.4% of the file's
+size per change; an edit confined to unsampled bytes is not detected. Agent
+JSONL transcripts parse only appended records. Rewinds and session changes
+invalidate in-flight work.
 
 Helpers run outside the project, with bounded pipe handling and a 150-second
 deadline. Tool restrictions vary by provider and are not a universal OS sandbox.

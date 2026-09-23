@@ -60,7 +60,7 @@ open a split yourself and use `--session`.
 
 | Key | Action |
 | --- | --- |
-| Up / Down, mouse wheel or click | Select an item |
+| Up / Down, mouse wheel or click | Select an item (the mouse is captured only while a list is open, so text selection works in the normal panel) |
 | `j` / `k` | Scroll the view or evidence |
 | Enter / `e` | Toggle the evidence drawer |
 | `v` | Toggle panel and rail |
@@ -119,9 +119,10 @@ Edit `~/.glance/config.json` (or `$GLANCE_HOME/config.json`):
 }
 ```
 
-The default refresh interval is 30 seconds. Model precedence is `--model`,
-`GLANCE_MODEL`, config `model`, then `summary_models[provider]` or the provider
-default. The summary provider defaults to the transcript's agent. Select another
+The default refresh interval is 30 seconds. Model precedence is `--model` (for
+the requested summary agent only), then `summary_models[provider]`. `GLANCE_MODEL`
+and config `model` apply to Claude only; other providers otherwise use their CLI
+default, and a fallback never inherits `--model`. The summary provider defaults to the transcript's agent. Select another
 with `--summary-harness`; fallback requires `--summary-fallback` and applies
 only when the chosen executable is missing. See
 [summary providers](summary-providers.md) for the CLI contracts.
@@ -138,7 +139,8 @@ glance-panel cache-clean --older-than-days 30
 
 Long sessions use forward chunks so early turns are not silently skipped.
 Individual message/tool excerpts are still clipped. The footer shows successful
-call counts and cost when reported by the provider; it is not a billing meter.
+call counts and cost when reported by the provider; a trailing `+` means some
+calls reported no cost, so the figure is a lower bound. It is not a billing meter.
 
 ## Optional setup and files
 

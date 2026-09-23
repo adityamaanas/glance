@@ -33,7 +33,8 @@ GitHub release, Homebrew tap or crates.io publication is implied by this list.
 - Default to the transcript agent's summary CLI. Explicit provider/model
   overrides and missing-executable fallback are available.
 - Configure refresh intervals, prompt additions, model-free operation and cache
-  retention. Report successful call counts and provider-reported cost.
+  retention. Report successful call counts and provider-reported cost, marking
+  totals that include unpriced calls as lower bounds.
 - Process long sessions forward in chunks, retaining early turns while clipping
   individual excerpts.
 - Parse native structured envelopes, bound subprocess I/O and timeouts, and
