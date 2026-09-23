@@ -1,0 +1,152 @@
+{
+ "type": "result",
+ "is_error": false,
+ "total_cost_usd": 0.0124,
+ "structured_output": {
+  "topline": "Make payment webhooks survive provider timeouts without double charges",
+  "now": "Webhook tests pass; next, choose the idempotency key retention window",
+  "focus": "webhooks",
+  "branches": [
+   {
+    "id": "webhooks",
+    "name": "webhook retries",
+    "status": "active",
+    "summary": "Retries with backoff plus receiver-side dedupe; PR #128"
+   },
+   {
+    "id": "refund-ci",
+    "name": "flaky refund test",
+    "status": "parked",
+    "summary": "Times out on the shared test database; parked until webhooks land"
+   }
+  ],
+  "plan": [
+   {
+    "id": "read-client",
+    "text": "Read WebhookClient and its tests",
+    "branch": "webhooks",
+    "turn": 1,
+    "source_turns": [
+     2,
+     3
+    ],
+    "from": null,
+    "status": "done"
+   },
+   {
+    "id": "retry",
+    "text": "Retry timeouts and 5xx with jittered backoff",
+    "branch": "webhooks",
+    "turn": 5,
+    "source_turns": [
+     5,
+     6,
+     7
+    ],
+    "from": "read-client",
+    "status": "done"
+   },
+   {
+    "id": "dedupe",
+    "text": "Ignore duplicate deliveries in the receiver",
+    "branch": "webhooks",
+    "turn": 16,
+    "source_turns": [
+     8,
+     9,
+     16,
+     17,
+     19
+    ],
+    "from": "retry",
+    "status": "done"
+   },
+   {
+    "id": "retention",
+    "text": "Choose how long to keep processed keys",
+    "branch": "webhooks",
+    "turn": 11,
+    "source_turns": [
+     10,
+     11
+    ],
+    "from": "dedupe",
+    "status": "in_progress"
+   },
+   {
+    "id": "open-pr",
+    "text": "Open the PR",
+    "branch": "webhooks",
+    "turn": 20,
+    "source_turns": [
+     20
+    ],
+    "from": "retention",
+    "status": "pending"
+   },
+   {
+    "id": "refund-timeout",
+    "text": "Fix the refund test timeout",
+    "branch": "refund-ci",
+    "turn": 15,
+    "source_turns": [
+     12,
+     14,
+     15
+    ],
+    "from": null,
+    "status": "pending"
+   }
+  ],
+  "open_questions": [
+   {
+    "id": "q-retention",
+    "text": "Keep processed keys for 72 hours, or longer?",
+    "branch": "webhooks",
+    "turn": 10,
+    "source_turns": [
+     10,
+     11
+    ],
+    "from": "dedupe"
+   }
+  ],
+  "decisions": [
+   {
+    "id": "d-key",
+    "text": "Use event.id as the Idempotency-Key",
+    "branch": "webhooks",
+    "turn": 5,
+    "source_turns": [
+     4,
+     6
+    ],
+    "from": "retry"
+   },
+   {
+    "id": "d-4xx",
+    "text": "Never retry 4xx responses",
+    "branch": "webhooks",
+    "turn": 5,
+    "source_turns": [
+     6,
+     7
+    ],
+    "from": "retry"
+   },
+   {
+    "id": "d-order",
+    "text": "Webhooks first; refund test is parked",
+    "branch": "refund-ci",
+    "turn": 12,
+    "source_turns": [
+     12,
+     15
+    ],
+    "from": null
+   }
+  ],
+  "blockers": [],
+  "todo_updates": []
+ }
+}

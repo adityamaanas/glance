@@ -2,17 +2,39 @@
 
 ## Unreleased
 
-- Parse Claude's `structured_output` envelope, with compatibility for JSON text results.
-- Stream model input through stdin, drain both output pipes, and bound process/pipe timeouts.
-- Reject old summary results after session changes and reset pinned workstream focus.
-- Preserve unrelated grouped hooks, quote executable paths, and atomically replace settings/caches.
-- Recover truncated or rewritten transcripts, buffer incomplete UTF-8, and retain compact tool outcomes.
-- Validate cached turn fingerprints; cache format 3 rebuilds older summaries once.
-- Refresh herdr's current status when subscribing again after a disconnect.
-- Evidence drawer (`e`/Enter) and relationship graph (`g`); `graph --html` exports an offline view.
-- Up/Down now select summary items and open the evidence drawer; use `j`/`k` to scroll the panel.
-- Mouse capture is enabled only while the evidence, graph or todo lists are open, so text
-  selection and terminal scrollback keep working in the normal panel.
+User-visible changes since 0.2.0. Existing summary caches rebuild once after upgrading.
+
+### Added
+
+- **More agents.** Follow Codex, Gemini CLI, pi, OpenCode and Cursor sessions as well as Claude Code (`--harness`). Under herdr the agent is detected automatically.
+- **Cursor capture.** `setup --harness cursor` records new IDE chats through Cursor's hooks; `cursor-stream` records Cursor CLI runs while passing the output through unchanged.
+- **Summaries from any agent.** Summaries are written by the session's own agent CLI by default, with `--summary-harness`, per-agent models (`summary_models`) and an opt-in fallback for a missing CLI (`--summary-fallback`).
+- **Evidence and graph.** Every summary item links to the transcript turns behind it (`Enter`/`e`), and a relationship graph (`g`) shows how steps, questions and decisions follow from each other. `graph --html` exports an offline, searchable page.
+- **Personal todos.** Add your own reminders in the panel (`a`, `t`, `x`, `d`) or with `glance-panel todo`. Only you write them; summaries can only update their status, with evidence. `--carry-from` copies them to a new session.
+- **Any terminal.** `attach` opens the panel in herdr, tmux or Zellij; `--cwd .` follows the latest session in a project; `pick` lists and chooses sessions.
+- **Setup command.** `glance-panel setup` installs Claude Code's session-start and turn-end hooks (`--remove` undoes it). An optional Claude Code plugin installs the same hooks.
+- **herdr sidebar.** `--sidebar` or `sidebar_metadata` shows the current step and plan progress in herdr's sidebar.
+- **Windows support**, including herdr's named pipe (`HERDR_SOCKET_PATH`) and PowerShell/Command Prompt hooks.
+- **Controls.** `--no-model`/`no_model`, `--refresh-seconds`, a custom `prompt`, `cache-clean` and `cache_retention_days`. The footer shows summary calls and reported cost (`+` marks a lower bound).
+- **Release builds** for macOS (Intel and Apple Silicon), Linux (x86-64 and ARM64) and Windows, with installers, checked in CI. Not yet published.
+
+### Changed
+
+- Up/Down now open the item list and select items; `j`/`k` scroll the panel.
+- The mouse is only captured while a list is open, so text selection and scrollback work in the main panel.
+- `--model` applies only to the requested summary agent. `GLANCE_MODEL` and config `model` apply to Claude only, and a fallback never inherits `--model`.
+- Long sessions are summarized in forward chunks, so early turns are never skipped.
+- `hook --install`/`--uninstall` are superseded by `setup`/`setup --remove` (still accepted).
+- Minimum Rust version is 1.88.
+- Documentation rewritten: a getting-started tutorial, a guide to the panel with real screenshots, task-focused guides, and reference pages checked against the code.
+
+### Fixed
+
+- Summaries read Claude's structured output correctly and no longer hang on large output.
+- A summary for a previous session can no longer overwrite the current one after `/clear` or a resume.
+- Installing the hook keeps other hooks in the same group, and settings, caches and todos are written atomically.
+- Rewritten or truncated transcripts and split UTF-8 characters are handled; stale caches are detected.
+- The herdr connection refreshes its status after reconnecting and no longer polls while idle.
 
 ## 0.2.0
 

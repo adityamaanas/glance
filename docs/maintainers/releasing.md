@@ -1,5 +1,9 @@
 # Release packaging and installation
 
+[Docs home](../README.md) · [Compatibility](../explanation/compatibility.md) · [Changelog](../../CHANGELOG.md)
+
+For maintainers: how releases are built, checked and published.
+
 Glance uses cargo-dist 0.32.0 to build versioned release archives, SHA-256
 checksums, shell and PowerShell installers, and a Homebrew formula. The package
 and executable are both named `glance-panel`.
@@ -46,8 +50,8 @@ glance-panel setup                  # Claude Code
 glance-panel setup --harness cursor # Cursor IDE
 ```
 
-See [agent transcript adapters](agent-transcripts.md),
-[Cursor integration](cursor.md), and [summary providers](summary-providers.md)
+See [agent transcript formats](../reference/agents.md),
+[Follow Cursor](../how-to/cursor.md), and [summary providers](../how-to/summary-providers.md)
 for agent-specific configuration and validation limits.
 
 The generated `glance-panel.rb` formula is a release artifact. There is no

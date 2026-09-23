@@ -23,7 +23,7 @@ cargo test
 cargo build --release
 ```
 
-CI runs these checks on Windows, Linux and macOS, plus a Rust 1.88 check. Release CI builds and smoke-tests installers on five targets. See [architecture](docs/architecture.md) for module responsibilities and [compatibility](docs/compatibility.md) for live verification gaps.
+CI runs these checks on Windows, Linux and macOS, plus a Rust 1.88 check. Release CI builds and smoke-tests installers on five targets. See [how Glance works](docs/explanation/how-it-works.md) for module responsibilities and [compatibility](docs/explanation/compatibility.md) for live verification gaps.
 
 ## What a good PR contains
 
@@ -36,8 +36,16 @@ Do not commit tokens, personal transcripts, caches, or agent databases. Replace 
 
 For visual changes, check narrow and wide layouts, Unicode width, and light and dark backgrounds. Include useful alt text for documentation assets and label illustrations.
 
-## Documentation map
+## Documentation
 
-The README introduces the project and gets users started. Details belong in `docs/`. Keep shipped functionality separate from planned work in `ROADMAP.md`, and record user-visible changes in `CHANGELOG.md`.
+Follow the [documentation standard](docs/STANDARD.md). In short:
+
+- Put each change in the right kind of page: the [getting-started tutorial](docs/getting-started.md), a task-focused [how-to guide](docs/how-to/), a [reference](docs/reference/) page, or an [explanation](docs/explanation/).
+- Update docs in the same PR as the behavior change, and add a user-facing line to `CHANGELOG.md` under "Unreleased".
+- After changing a command or flag, regenerate the command-line reference with `GLANCE_UPDATE_DOCS=1 cargo test --test cli_reference`.
+- After changing the panel's layout, regenerate the screenshots with `cargo build --release && python3 scripts/capture-screens.py` (needs tmux).
+- Check links with `python3 scripts/check-docs.py`.
+
+Keep shipped functionality separate from planned work in `ROADMAP.md`.
 
 For vulnerabilities, follow [SECURITY.md](SECURITY.md).

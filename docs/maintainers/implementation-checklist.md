@@ -1,6 +1,6 @@
 # Implementation checklist
 
-[← Home](../README.md) · [Roadmap](../ROADMAP.md) · [Compatibility](compatibility.md)
+[Docs home](../README.md) · [Roadmap](../../ROADMAP.md) · [Compatibility](../explanation/compatibility.md)
 
 Checked items are implemented with the stated automated or local validation.
 These development PRs do not constitute a published release or authenticated
