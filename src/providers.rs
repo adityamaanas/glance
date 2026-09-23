@@ -269,10 +269,7 @@ fn summary_value(value: Value) -> Result<Summary> {
     }
     let mut summary: Summary = serde_json::from_value(value).context("invalid summary fields")?;
     summary.normalize();
-    summary.usage = Some(Usage {
-        calls: 1,
-        estimated_usd: None,
-    });
+    summary.usage = Some(Usage::single(None));
     Ok(summary)
 }
 
@@ -304,7 +301,7 @@ pub fn parse(kind: Kind, data: &str) -> Result<Summary> {
             }
         }
         let mut s = summary_value(json!(text))?;
-        s.usage.as_mut().unwrap().estimated_usd = cost;
+        s.usage = Some(Usage::single(cost));
         return Ok(s);
     }
     let v: Value = serde_json::from_str(data).context("invalid summary CLI envelope")?;

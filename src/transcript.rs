@@ -3,7 +3,6 @@
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use std::fs::File;
-use std::hash::{DefaultHasher, Hasher};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -37,7 +36,11 @@ pub struct Transcript {
     pub session_id: String,
     offset: u64,
     partial: Vec<u8>,
-    prefix_hash: DefaultHasher,
+    /// Hashes of sampled blocks of consumed bytes; see `consumed_unchanged`.
+    checks: Vec<(u64, u64)>,
+    tail: Vec<u8>,
+    /// Parsed records of a line-delimited agent transcript, kept so appends are parsed once.
+    records: Vec<Value>,
     pub revision: u64,
     pub free: Free,
     pub turns: Vec<Turn>,
@@ -49,15 +52,18 @@ pub fn expected_path(cwd: &str, session_id: &str) -> Result<PathBuf> {
     expected_path_in(&claude_dir()?, cwd, session_id)
 }
 
+/// Claude Code's project directory name: every non-alphanumeric character becomes '-'.
+pub fn project_slug(cwd: &str) -> String {
+    cwd.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
 fn expected_path_in(root: &Path, cwd: &str, session_id: &str) -> Result<PathBuf> {
     validate_session_id(session_id)?;
-    let slug: String = cwd
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
     Ok(root
         .join("projects")
-        .join(slug)
+        .join(project_slug(cwd))
         .join(format!("{session_id}.jsonl")))
 }
 
@@ -108,7 +114,9 @@ impl Transcript {
             session_id: String::new(),
             offset: 0,
             partial: Vec::new(),
-            prefix_hash: DefaultHasher::new(),
+            checks: Vec::new(),
+            tail: Vec::new(),
+            records: Vec::new(),
             revision: 0,
             free: Free::default(),
             turns: Vec::new(),
@@ -124,7 +132,8 @@ impl Transcript {
 
     /// Read appended lines; returns how many turns were added. A missing file reads as empty.
     pub fn read_new(&mut self) -> Result<usize> {
-        if self.harness != crate::harness::Kind::Claude {
+        let claude = self.harness == crate::harness::Kind::Claude;
+        if !claude && !crate::harness::incremental(self.harness, &self.path) {
             let snapshot = crate::harness::read(self.harness, &self.path, &self.session_id)?;
             let previous = self.turns.len();
             if !snapshot.turns.starts_with(&self.turns) {
@@ -141,25 +150,16 @@ impl Transcript {
         };
         let mut replaced = file.metadata()?.len() < self.offset;
         if !replaced && self.offset != 0 {
-            // A transcript can be rewritten earlier while its length and last
-            // record stay unchanged. Verify all consumed bytes, including a
-            // partial line, before treating the new data as an append.
-            let mut previous = Read::by_ref(&mut file).take(self.offset);
-            let mut hash = DefaultHasher::new();
-            let mut buffer = [0; 8192];
-            loop {
-                let n = previous.read(&mut buffer)?;
-                if n == 0 {
-                    break;
-                }
-                hash.write(&buffer[..n]);
-            }
-            replaced = hash.finish() != self.prefix_hash.finish();
+            // A transcript can be rewritten earlier while its length and last record
+            // stay unchanged; check samples of the consumed bytes before appending.
+            replaced = !self.consumed_unchanged(&mut file)?;
         }
         if replaced {
             self.offset = 0;
             self.partial.clear();
-            self.prefix_hash = DefaultHasher::new();
+            self.checks.clear();
+            self.tail.clear();
+            self.records.clear();
             self.turns.clear();
             self.free = Free::default();
             self.revision = self.revision.wrapping_add(1);
@@ -167,6 +167,7 @@ impl Transcript {
         file.seek(SeekFrom::Start(self.offset))?;
         let mut reader = BufReader::new(file);
         let before = self.turns.len();
+        let records_before = self.records.len();
         let mut buf = Vec::new();
         loop {
             buf.clear();
@@ -175,17 +176,31 @@ impl Transcript {
                 break;
             }
             self.offset += n as u64;
-            self.prefix_hash.write(&buf);
             self.partial.extend_from_slice(&buf);
             if !buf.ends_with(b"\n") {
                 break;
             }
             let line = std::mem::take(&mut self.partial);
             if let Ok(v) = serde_json::from_slice::<Value>(&line) {
-                self.ingest(&v);
+                if claude {
+                    self.ingest(&v);
+                } else {
+                    self.records.push(v);
+                }
             }
         }
-        Ok(self.turns.len() - before)
+        self.record_checks(&mut reader.into_inner())?;
+        if !claude && (replaced || self.records.len() != records_before) {
+            // Folding parsed records is in-memory; only new bytes were read and parsed.
+            let snapshot = crate::harness::fold(self.harness, &self.records)?;
+            crate::harness::check_id(&snapshot, &self.session_id)?;
+            if !snapshot.turns.starts_with(&self.turns) {
+                self.revision = self.revision.wrapping_add(1);
+            }
+            self.turns = snapshot.turns;
+            self.free = snapshot.free;
+        }
+        Ok(self.turns.len().saturating_sub(before))
     }
 
     fn ingest(&mut self, v: &Value) {
@@ -339,15 +354,51 @@ impl Transcript {
         })
     }
 
-    pub fn fingerprint(&self, count: usize) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
-        for turn in self.turns.iter().take(count) {
-            match turn {
-                Turn::User(s) => (0, s).hash(&mut hash),
-                Turn::Assistant(s) => (1, s).hash(&mut hash),
-                Turn::Tool(s) => (2, s).hash(&mut hash),
+    /// Whether the consumed bytes still match. Re-reading the whole prefix on every append
+    /// would cost O(size) per change, so compare the retained tail plus one 4 KiB sample per
+    /// MiB (about 0.4% of the file). An edit confined to unsampled bytes is not detected.
+    fn consumed_unchanged(&self, file: &mut File) -> Result<bool> {
+        for &(start, hash) in &self.checks {
+            if block_hash(file, start)? != hash {
+                return Ok(false);
             }
+        }
+        file.seek(SeekFrom::Start(self.offset - self.tail.len() as u64))?;
+        let mut tail = vec![0; self.tail.len()];
+        file.read_exact(&mut tail)?;
+        Ok(tail == self.tail)
+    }
+
+    /// Record newly consumed sample blocks and the bytes just before the read offset.
+    fn record_checks(&mut self, file: &mut File) -> Result<()> {
+        loop {
+            let start = self.checks.len() as u64 * CHECK_STRIDE;
+            if start + CHECK_BLOCK > self.offset {
+                break;
+            }
+            let hash = block_hash(file, start)?;
+            self.checks.push((start, hash));
+        }
+        let tail_len = self.offset.min(CHECK_BLOCK);
+        file.seek(SeekFrom::Start(self.offset - tail_len))?;
+        self.tail.resize(tail_len as usize, 0);
+        file.read_exact(&mut self.tail)?;
+        Ok(())
+    }
+
+    /// Identifies the first `count` turns. Persisted in caches and todo files, so it
+    /// must not depend on the toolchain's unspecified `DefaultHasher` algorithm.
+    pub fn fingerprint(&self, count: usize) -> u64 {
+        let mut hash = StableHasher::new();
+        for turn in self.turns.iter().take(count) {
+            let (tag, text) = match turn {
+                Turn::User(s) => (0u8, s),
+                Turn::Assistant(s) => (1, s),
+                Turn::Tool(s) => (2, s),
+            };
+            hash.write(&[tag]);
+            hash.write(&(text.len() as u64).to_le_bytes());
+            hash.write(text.as_bytes());
         }
         hash.finish()
     }
@@ -398,6 +449,45 @@ fn strip_wrappers(text: &str) -> String {
     s.trim().to_string()
 }
 
+const CHECK_BLOCK: u64 = 4096;
+const CHECK_STRIDE: u64 = 1024 * 1024;
+
+fn block_hash(file: &mut File, start: u64) -> Result<u64> {
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = vec![0; CHECK_BLOCK as usize];
+    file.read_exact(&mut bytes)?;
+    let mut hash = StableHasher::new();
+    hash.write(&bytes);
+    Ok(hash.finish())
+}
+
+/// 64-bit FNV-1a: a fixed algorithm whose output is safe to store on disk.
+#[derive(Clone, Copy)]
+pub struct StableHasher(u64);
+
+impl StableHasher {
+    pub fn new() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+
+    pub fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 ^= u64::from(*byte);
+            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+
+    pub fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+impl Default for StableHasher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub fn clip(s: &str, max: usize) -> String {
     let s = s.trim();
     if s.chars().count() <= max {
@@ -410,6 +500,28 @@ pub fn clip(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn incremental_agent_reads_match_a_whole_file_parse() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("codex.jsonl");
+        let fixture = include_bytes!("../tests/fixtures/codex.jsonl");
+        let split = fixture.len() / 2;
+        std::fs::write(&path, &fixture[..split]).unwrap();
+        let mut tr = super::Transcript::open_for(&path, crate::harness::Kind::Codex, "same-id");
+        tr.read_new().unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(&fixture[split..]).unwrap();
+        tr.read_new().unwrap();
+        let whole = crate::harness::parse(crate::harness::Kind::Codex, fixture).unwrap();
+        assert_eq!(tr.turns, whole.turns);
+        assert_eq!(tr.revision, 0);
+        assert!(tr.offset > 0 && tr.records.len() > 1);
+    }
+
     #[test]
     fn adapter_append_and_rollback_update_the_transcript_generation() {
         use std::io::Write;
@@ -494,6 +606,42 @@ mod tests {
         );
         assert_eq!(tr.read_new().unwrap(), 0);
         assert_eq!(tr.revision, 1);
+    }
+
+    #[test]
+    fn rewrite_inside_a_sampled_block_of_a_large_transcript_is_detected() {
+        let line = format!(
+            "{}\n",
+            serde_json::json!({"type":"user","message":{"content":"x".repeat(1000)}})
+        );
+        let body = line.repeat(1500);
+        let mut tr = tr_with(&[]);
+        std::fs::write(&tr.path, &body).unwrap();
+        tr.read_new().unwrap();
+        assert!(tr.checks.len() >= 2, "samples at 0 and 1 MiB");
+        let before = tr.revision;
+        // Same length, same last record, changed bytes inside the 1 MiB sample.
+        let mut changed = body.into_bytes();
+        let at = CHECK_STRIDE as usize + 100;
+        let pos = at + changed[at..].iter().position(|b| *b == b'x').unwrap();
+        changed[pos] = b'y';
+        std::fs::write(&tr.path, &changed).unwrap();
+        tr.read_new().unwrap();
+        assert_eq!(tr.revision, before + 1);
+    }
+
+    #[test]
+    fn fingerprint_is_a_fixed_function_of_turn_boundaries() {
+        let mut tr = Transcript::open(Path::new("unused"));
+        tr.turns = vec![Turn::User("ab".into()), Turn::Assistant("c".into())];
+        let mut other = Transcript::open(Path::new("unused"));
+        other.turns = vec![Turn::User("a".into()), Turn::Assistant("bc".into())];
+        assert_ne!(tr.fingerprint(2), other.fingerprint(2));
+        assert_eq!(tr.fingerprint(0), StableHasher::new().finish());
+        // Pinned value: changing it silently invalidates every stored cache and todo.
+        let mut known = StableHasher::new();
+        known.write(b"glance");
+        assert_eq!(known.finish(), 0xa7f3_0ac9_d321_8e91);
     }
 
     #[test]
