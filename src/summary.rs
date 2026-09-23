@@ -103,7 +103,30 @@ pub struct Summary {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct Usage {
     pub calls: u64,
+    /// Sum of the estimates the CLI reported; calls without one are counted in `unpriced`.
     pub estimated_usd: Option<f64>,
+    #[serde(default)]
+    pub unpriced: u64,
+}
+
+impl Usage {
+    pub fn single(estimated_usd: Option<f64>) -> Self {
+        Self {
+            calls: 1,
+            estimated_usd,
+            unpriced: u64::from(estimated_usd.is_none()),
+        }
+    }
+
+    /// Add earlier calls. A missing estimate is never treated as zero cost.
+    pub fn accumulate(&mut self, previous: &Usage) {
+        self.calls += previous.calls;
+        self.unpriced += previous.unpriced;
+        self.estimated_usd = match (self.estimated_usd, previous.estimated_usd) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
+    }
 }
 
 impl Summary {
@@ -311,14 +334,8 @@ pub fn summarize(prev: &Summary, new_turns: &str, title: Option<&str>) -> Result
     }
     let stdout = run_process(&mut cmd, prompt.into_bytes(), TIMEOUT)?;
     let mut summary = parse_response(&stdout)?;
-    if let Some(usage) = &mut summary.usage {
-        usage.calls += prev.usage.as_ref().map(|u| u.calls).unwrap_or(0);
-        if let (Some(current), Some(previous)) = (
-            usage.estimated_usd,
-            prev.usage.as_ref().and_then(|u| u.estimated_usd),
-        ) {
-            usage.estimated_usd = Some(current + previous);
-        }
+    if let (Some(usage), Some(previous)) = (&mut summary.usage, &prev.usage) {
+        usage.accumulate(previous);
     }
     Ok(summary)
 }
@@ -435,10 +452,9 @@ fn parse_response(stdout: &str) -> Result<Summary> {
         other => serde_json::from_value(other.clone()).context("parse structured result")?,
     };
     summary.normalize();
-    summary.usage = Some(Usage {
-        calls: 1,
-        estimated_usd: envelope.get("total_cost_usd").and_then(Value::as_f64),
-    });
+    summary.usage = Some(Usage::single(
+        envelope.get("total_cost_usd").and_then(Value::as_f64),
+    ));
     Ok(summary)
 }
 
@@ -488,6 +504,18 @@ fn clean_cache_in(dir: &std::path::Path, cutoff: u64, dry_run: bool) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_totals_keep_known_costs_and_count_unpriced_calls() {
+        let mut total = Usage::single(Some(0.25));
+        total.accumulate(&Usage::single(None));
+        assert_eq!((total.calls, total.unpriced), (2, 1));
+        assert_eq!(total.estimated_usd, Some(0.25));
+        let mut later = Usage::single(Some(0.5));
+        later.accumulate(&total);
+        assert_eq!((later.calls, later.unpriced), (3, 1));
+        assert_eq!(later.estimated_usd, Some(0.75));
+    }
 
     #[test]
     fn cleanup_preserves_configuration_todos_and_recent_cache() {

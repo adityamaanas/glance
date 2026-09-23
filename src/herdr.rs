@@ -121,7 +121,13 @@ impl Client {
                             return;
                         }
                     }
-                    while let Ok(line) = stream.line(Duration::from_secs(60)) {
+                    loop {
+                        let line = match stream.line(Duration::from_secs(60)) {
+                            Ok(line) => line,
+                            // Quiet periods are normal; keep the subscription open.
+                            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+                            Err(_) => break,
+                        };
                         let Ok(v) = serde_json::from_str::<Value>(&line) else {
                             continue;
                         };
