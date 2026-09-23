@@ -1,84 +1,87 @@
 # Implementation checklist
 
-[← Home](../README.md) · [Roadmap](../ROADMAP.md)
+[← Home](../README.md) · [Roadmap](../ROADMAP.md) · [Compatibility](compatibility.md)
 
-Work is delivered through focused PRs and granular commits. Checked items are implemented and validated at the stated level; planned support is not advertised as shipped. Cursor includes both its CLI and IDE conversations.
+Checked items are implemented with the stated automated or local validation.
+These development PRs do not constitute a published release or authenticated
+live verification of every external agent.
 
-## 1. Repository presentation
+## Repository presentation
 
-- [x] Redesign README hierarchy, navigation, quick start, feature table, and badges.
-- [x] Add accessible SVG hero, panel illustration, and rail illustration using fictional content.
-- [x] Add usage, architecture, privacy, and troubleshooting guides.
-- [x] Add contribution and security guidance, issue forms, and a PR template.
-- [x] Reconcile stale roadmap descriptions and command names.
-- [x] Validate 46 local links, SVG rendering, desktop/mobile README layout, and formatting.
+- [x] README hierarchy, quick start, guide links and feature overview.
+- [x] Accessible SVG hero/panel/rail illustrations with fictional content.
+- [x] Usage, architecture, privacy, troubleshooting and contribution guides.
+- [x] Security reporting, issue forms and PR template.
+- [x] Final roadmap, release notes and compatibility matrix.
 
-## 2. Correctness and reliability
+## Correctness and reliability
 
-- [ ] Parse Claude's structured output field with response fixtures.
-- [ ] Reject stale summary results after session changes.
-- [ ] Preserve unrelated hooks during installation/removal, including grouped commands.
-- [ ] Drain subprocess pipes concurrently; enforce timeouts and reap children.
-- [ ] Pass transcript content through stdin; avoid logging ancestor prompt arguments.
-- [ ] Quote shell commands correctly and validate attach ratios.
-- [ ] Handle transcript truncation/replacement and partially written UTF-8.
-- [ ] Validate cache/session paths, use safe atomic writes, and detect stale cache cursors.
-- [ ] Resynchronize status/session after reconnects; bound retry behavior.
-- [ ] Preserve compact tool outcomes for summary evidence.
+- [x] Structured response envelopes and visible-text fallbacks with fixtures.
+- [x] Reject stale summaries after session switches and transcript rewinds.
+- [x] Preserve unrelated grouped hooks during setup/removal.
+- [x] Drain subprocess pipes, enforce deadlines and reap the direct child.
+- [x] Use stdin for supported providers and avoid logging ancestor prompt arguments.
+- [x] Document Cursor argv input and provider-specific retention/tool limits.
+- [x] Quote launch commands, preserve split arguments and validate ratios.
+- [x] Handle truncation, earlier rewrites, partial lines and partial UTF-8.
+- [x] Validate session paths/cache fingerprints and use atomic state writes.
+- [x] Resynchronize herdr state on reconnect and bound transport waits.
+- [x] Preserve compact tool outcomes as evidence.
 
-## 3. Compatibility and summary controls
+## Controls and agents
 
-- [ ] Separate discovery, parsing, activity, and summary execution behind agent adapters.
-- [ ] Add sanitized fixtures and deterministic boundary tests without paid model calls.
-- [ ] Add CLI/env/config model precedence and per-agent defaults.
-- [ ] Add refresh intervals, model-free operation, custom prompt configuration, and usage visibility.
-- [ ] Chunk long-session input without marking omitted context as processed.
-- [ ] Add cache cleanup/retention controls.
+- [x] Separate discovery, normalization, activity and provider execution.
+- [x] Sanitized fixtures and mock process contracts without paid model calls.
+- [x] CLI/env/config model precedence and per-provider model configuration.
+- [x] Refresh interval, custom prompt, no-model mode and reported usage/cost.
+- [x] Forward long-session chunks without silently advancing past early turns.
+- [x] Cache retention and dry-run cleanup.
+- [x] Claude Code, Codex, Gemini CLI, pi, OpenCode and Cursor transcript adapters.
+- [x] Cursor CLI stream forwarding/capture and Cursor IDE visible event hooks.
+- [x] Matching-agent summary defaults and explicit missing-executable fallback.
+- [x] Record format coverage and identify absent live version verification.
 
-## 4. Navigation, evidence, and graph
+## Navigation and personal todos
 
-- [ ] Select items by keyboard and mouse; show supporting transcript excerpts in a drawer.
-- [ ] Add stable item IDs, validated source-turn references, and relationship edges.
-- [ ] Collapse older completed branches while preserving access to their context.
-- [ ] Add terminal graph view and narrow-terminal handling.
-- [ ] Export a self-contained HTML graph with escaped content and optional opening.
+- [x] Keyboard/mouse selection and supporting transcript drawer.
+- [x] Stable item IDs, validated source turns and relationship edges.
+- [x] Completed workstream collapsing and focus.
+- [x] Terminal graph plus offline HTML export with escaped content.
+- [x] Panel/CLI add, toggle, delete and list for personal todos.
+- [x] Per-session/per-agent stores, provenance, locks and atomic updates.
+- [x] Model status-only updates and manual override protection.
+- [x] Explicit carry across sessions; no automatic todo transfer.
+- [x] Infer the current herdr pane's agent for todo commands.
 
-## 5. Personal todos
+## Discovery, placement and setup
 
-- [ ] Add, select, complete, and delete todos in the panel and CLI.
-- [ ] Store todos separately per session with stable IDs and update provenance.
-- [ ] Let summaries update statuses only, backed by evidence; preserve user wording.
-- [ ] Protect manual overrides until newer evidence exists.
-- [ ] Make carrying todos across session changes an explicit user choice.
+- [x] Latest session by cwd and bounded session picker.
+- [x] Stop markers and settled-growth fallback.
+- [x] herdr, tmux and Zellij placement plus manual split instructions.
+- [x] Optional herdr sidebar step/progress metadata with expiry.
+- [x] Idempotent setup/removal and optional Claude plugin packaging.
+- [x] Windows named pipes, platform paths and command quoting.
+- [x] Local tmux smoke interaction for panel/todo navigation.
 
-## 6. Discovery, placement, and setup
+## Distribution and validation
 
-- [ ] Discover the latest session by working directory and provide a session picker.
-- [ ] Add Stop-hook activity detection with settled-growth fallback.
-- [ ] Add tmux and Zellij attachment; document manual terminal splits.
-- [ ] Publish current step/progress to herdr sidebar metadata.
-- [ ] Add unified setup/removal with idempotent hook registration.
-- [ ] Package an optional Claude plugin for hook lifecycle management.
-- [ ] Add Windows named-pipe transport, command launching, and platform-safe paths.
+- [x] Archive builds for macOS ARM64/x86-64, Linux ARM64/x86-64 and Windows x86-64.
+- [x] Checksums and real shell/PowerShell installer smoke tests on all five CI targets.
+- [x] Homebrew formula generation and manual crates.io workflow with default dry run.
+- [x] Document maintainer credentials, environment protection and release steps.
+- [x] Crate packaging/compile dry run without publication.
+- [x] Formatting, lint, unit/integration checks and minimum Rust version CI.
+- [x] Automated narrow/wide rendering geometry, Unicode and input coverage.
+- [x] Documentation/illustration checks and combined PR validation.
 
-## 7. Agent integrations
+## Explicit remaining release and live checks
 
-- [ ] Claude Code: preserve current behavior through the adapter migration.
-- [ ] Codex: discovery, rollout parsing, activity, and summary execution.
-- [ ] OpenCode: discovery, database ingestion, and summary execution.
-- [ ] Gemini CLI: discovery, transcript parsing, activity, and summary execution.
-- [ ] pi: discovery, session parsing, activity, and summary execution.
-- [ ] Cursor CLI: discovery, transcript parsing, activity, and summary execution.
-- [ ] Cursor IDE: research available local interfaces; implement conversation discovery and ingestion.
-- [ ] Record tested versions and distinguish fixture coverage from live verification for every adapter.
+- [ ] Publish a versioned release and crate after maintainer review.
+- [ ] Configure and publish a Homebrew tap if desired.
+- [ ] Record authenticated live versions for all six summary providers.
+- [ ] Exercise actual Cursor IDE/CLI sessions against their installed versions.
+- [ ] Complete interactive herdr coverage on all three OS families and live Zellij coverage.
+- [ ] Broaden terminal/font/theme appearance checks beyond current fixtures.
 
-## 8. Distribution and final validation
-
-- [ ] Automate release archives for macOS arm64/x86_64, Linux arm64/x86_64, and Windows.
-- [ ] Add checksums, installer support, and installation smoke tests.
-- [ ] Prepare Homebrew distribution and crates.io publishing configuration.
-- [ ] Document release credentials/setup that maintainers must provide.
-- [ ] Maintain an OS/terminal/agent compatibility matrix.
-- [ ] Run formatting, lint, unit/integration tests, and platform builds on each relevant PR.
-- [ ] Check narrow/wide terminal rendering, Unicode, and keyboard navigation.
-- [ ] Refresh docs and release notes to describe verified final behavior.
+These unchecked items need release authority, credentials or specific live
+environments. No paid model call or external publication is part of automated CI.

@@ -2,46 +2,68 @@
 
 [← Home](../README.md) · [User guide](usage.md)
 
-Glance is a Rust terminal application with one event loop and background workers for input, transcript polling, herdr status, and model execution.
+Glance is a Rust terminal application with an event loop and workers for
+terminal input, transcript changes, agent status and summary execution.
 
 ```mermaid
 flowchart LR
-    Claude[Claude Code] -->|writes| Transcript[Local JSONL transcript]
-    Transcript -->|incremental read| Reader[Transcript reader]
-    Herdr[herdr status events] --> Loop[Application event loop]
+    Agents[Local transcripts / exports / Cursor hooks] --> Reader[Normalized turns and metadata]
+    Activity[herdr / stop markers / settled growth] --> Loop[Event loop]
     Reader --> Loop
-    Loop -->|new turns + previous state| Helper[claude -p]
-    Helper -->|summary| Cache[Session cache]
-    Cache --> Panel[ratatui panel / rail]
-    Reader -->|metadata| Panel
+    Todos[User-owned todos] --> Loop
+    Loop --> Helper[Selected agent CLI]
+    Helper --> Validate[Validate evidence and relationships]
+    Validate --> Cache[Versioned session cache]
+    Cache --> Views[Panel / rail / graph / HTML]
+    Reader --> Views
 ```
 
 ## Boundaries
 
 | Module | Responsibility |
 | --- | --- |
-| [`main.rs`](../src/main.rs) | CLI, attachment, state, workers, session following |
-| [`transcript.rs`](../src/transcript.rs) | Discovery, appended JSONL reads, metadata, turn rendering |
-| [`summary.rs`](../src/summary.rs) | Schema, normalization, model process, heuristic, versioned cache |
-| [`herdr.rs`](../src/herdr.rs) | Unix socket requests, status subscription, pane CLI operations |
-| [`setup.rs`](../src/setup.rs) | Hook settings and first-run preference |
-| [`view.rs`](../src/view.rs) | Panel, focus, rail layout, footer |
+| [main.rs](../src/main.rs) | CLI, state transitions, workers and session following |
+| [harness.rs](../src/harness.rs) | Agent formats and transcript locations |
+| [transcript.rs](../src/transcript.rs) | Claude incremental reading, normalized turns and excerpts |
+| [opencode.rs](../src/opencode.rs) | Read-only SQLite ingestion, including committed WAL data |
+| [cursor.rs](../src/cursor.rs) | IDE capture, CLI stream capture and hook ownership |
+| [discovery.rs](../src/discovery.rs) | Bounded discovery and cwd filtering |
+| [providers.rs](../src/providers.rs) | Summary CLI selection, isolation and response formats |
+| [summary.rs](../src/summary.rs) | Schema, chunks, model execution, heuristics and caches |
+| [evidence.rs](../src/evidence.rs) | References, relationship validation and offline export |
+| [todos.rs](../src/todos.rs) | User wording, status provenance, locking and persistence |
+| [herdr.rs](../src/herdr.rs), [transport.rs](../src/transport.rs) | Status/metadata over Unix sockets or Windows named pipes |
+| [placement.rs](../src/placement.rs), [signals.rs](../src/signals.rs) | Split commands and activity signals |
+| [setup.rs](../src/setup.rs), [view.rs](../src/view.rs) | Preferences/hooks and terminal rendering |
 
 ## Update lifecycle
 
-1. Resolve a session directly or through herdr, then load its transcript and cache.
-2. Poll transcript size every 700 ms and ingest complete appended lines.
-3. Wait for growth to settle and, when available, for herdr to stop reporting `working`.
-4. Pass the previous summary and pending compact turns to a background Claude process.
-5. Render the result and save a versioned cache for the next opening.
+1. Resolve an agent/session, read its transcript and load a matching cache.
+2. Poll file size/modified time, including OpenCode's WAL. Claude appends are
+   parsed incrementally; other adapters normalize a bounded snapshot.
+3. Wait for activity to settle and enforce the refresh interval.
+4. Send the previous summary, compact pending turns and user todos to a helper.
+5. Validate references, reject stale generations, apply eligible todo status
+   updates and atomically save the cache.
 
-The summary contains a stable goal, current work, branches, plan items, questions, decisions, and blockers. Items carry a workstream and turn index. Unknown workstream references normalize to the trunk.
+Cache fingerprints (a fixed FNV-1a hash, stable across Rust releases) tie
+processed turns to visible transcript content. Before reading an append, JSONL
+readers compare the last 4 KiB and one 4 KiB sample per MiB of consumed bytes,
+detecting earlier rewrites with an unchanged tail at about 0.4% of the file's
+size per change; an edit confined to unsampled bytes is not detected. Agent
+JSONL transcripts parse only appended records. Rewinds and session changes
+invalidate in-flight work.
 
-## Current limits
+Helpers run outside the project, with bounded pipe handling and a 150-second
+deadline. Tool restrictions vary by provider and are not a universal OS sandbox.
+Runtime/auth errors do not silently switch providers.
 
-- The herdr transport requires Unix sockets; Windows support is planned.
-- The parser omits tool-result bodies. Input rendering clips individual turns and retains only the end when a pass exceeds its budget.
-- The rail shows the current summary; removed items do not remain as historical events.
-- Tests cover parsing and view helpers. Process boundaries, hook preservation, and asynchronous transitions need broader coverage.
+## Limits and validation
 
-See the [implementation checklist](implementation-checklist.md) for reliability and compatibility work.
+Forward chunks preserve access to early turns, but per-message excerpts are
+clipped. Normalized adapters bound file ingestion. Views represent current
+summary state; metadata and heuristics remain available without model calls.
+
+Tests cover rewrites, asynchronous transitions, pipes, hooks, concurrent todo
+writes, provider process contracts, fixtures and rendering geometry. See
+[compatibility](compatibility.md) for live verification coverage.

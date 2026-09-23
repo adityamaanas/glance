@@ -11,7 +11,7 @@ Small, focused contributions are welcome: bug fixes, clearer docs, terminal usab
 
 ## Development
 
-Use current stable Rust on macOS or Linux. Claude Code and herdr are needed for live integration checks; unit tests should use local fixtures and avoid paid model calls.
+Use current stable Rust on Windows, macOS or Linux (minimum Rust 1.88). Agent CLIs and the relevant terminal are needed for live integration checks; automated tests use local fixtures and avoid paid model calls.
 
 ```sh
 git clone https://github.com/adityamaanas/glance.git
@@ -23,7 +23,7 @@ cargo test
 cargo build --release
 ```
 
-CI runs these checks on Linux and macOS. See [architecture](docs/architecture.md) for module responsibilities.
+CI runs these checks on Windows, Linux and macOS, plus a Rust 1.88 check. Release CI builds and smoke-tests installers on five targets. See [architecture](docs/architecture.md) for module responsibilities and [compatibility](docs/compatibility.md) for live verification gaps.
 
 ## What a good PR contains
 
