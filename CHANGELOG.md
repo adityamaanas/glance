@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Parse Claude's `structured_output` envelope, with compatibility for JSON text results.
+- Stream model input through stdin, drain both output pipes, and bound process/pipe timeouts.
+- Reject old summary results after session changes and reset pinned workstream focus.
+- Preserve unrelated grouped hooks, quote executable paths, and atomically replace settings/caches.
+- Recover truncated or rewritten transcripts, buffer incomplete UTF-8, and retain compact tool outcomes.
+- Validate cached turn fingerprints; cache format 3 rebuilds older summaries once.
+- Refresh herdr's current status when subscribing again after a disconnect.
+
 ## 0.2.0
 
 - Branches: the summary models separate threads of work (for example one PR

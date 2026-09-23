@@ -27,7 +27,10 @@ pub fn load_config() -> Config {
 }
 
 pub fn save_config(cfg: &Config) -> Result<()> {
-    std::fs::write(config_path()?, serde_json::to_string_pretty(cfg)?)?;
+    atomic_write(
+        &config_path()?,
+        serde_json::to_string_pretty(cfg)?.as_bytes(),
+    )?;
     Ok(())
 }
 
@@ -57,7 +60,7 @@ fn write_settings(v: &Value) -> Result<()> {
     }
     let mut text = serde_json::to_string_pretty(v)?;
     text.push('\n');
-    std::fs::write(&path, text)?;
+    atomic_write(&path, text.as_bytes())?;
     Ok(())
 }
 
@@ -69,11 +72,55 @@ fn is_glance_entry(entry: &Value) -> bool {
             hs.iter().any(|h| {
                 h.get("command")
                     .and_then(Value::as_str)
-                    .map(|c| c.contains("glance"))
+                    .map(is_glance_command)
                     .unwrap_or(false)
             })
         })
         .unwrap_or(false)
+}
+
+fn is_glance_command(command: &str) -> bool {
+    let Ok(words) = shell_words::split(command) else {
+        return false;
+    };
+    let Some(exe) = words.first() else {
+        return false;
+    };
+    let name = exe.rsplit(['/', '\\']).next().unwrap_or(exe);
+    matches!(name, "glance" | "glance-panel" | "glance-panel.exe")
+        && words.get(1).map(String::as_str) == Some("hook")
+        || name == "glance-attach.sh"
+}
+
+fn remove_glance_hooks(list: &mut Vec<Value>) {
+    list.retain_mut(|entry| {
+        if !is_glance_entry(entry) {
+            return true;
+        }
+        let Some(hooks) = entry.get_mut("hooks").and_then(Value::as_array_mut) else {
+            return true;
+        };
+        hooks.retain(|hook| {
+            !hook
+                .get("command")
+                .and_then(Value::as_str)
+                .map(is_glance_command)
+                .unwrap_or(false)
+        });
+        !hooks.is_empty()
+    });
+}
+
+pub fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let parent = path.parent().ok_or_else(|| anyhow!("path has no parent"))?;
+    std::fs::create_dir_all(parent)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    tmp.write_all(bytes)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(path)
+        .map_err(|e| anyhow!("replace {}: {}", path.display(), e.error))?;
+    Ok(())
 }
 
 /// Whether a SessionStart entry calling glance is registered.
@@ -104,8 +151,8 @@ pub fn install_hook() -> Result<String> {
     let list = list
         .as_array_mut()
         .ok_or_else(|| anyhow!("settings.hooks.SessionStart is not an array"))?;
-    list.retain(|e| !is_glance_entry(e));
-    let command = format!("'{exe}' hook");
+    remove_glance_hooks(list);
+    let command = format!("{} hook", shell_words::quote(&exe));
     list.push(json!({
         "matcher": MATCHER,
         "hooks": [{ "type": "command", "command": command, "timeout": 20 }]
@@ -127,7 +174,7 @@ pub fn uninstall_hook() -> Result<String> {
         .pointer_mut("/hooks/SessionStart")
         .and_then(Value::as_array_mut)
     {
-        list.retain(|e| !is_glance_entry(e));
+        remove_glance_hooks(list);
     }
     write_settings(&settings)?;
     Ok("glance SessionStart hook removed".to_string())
@@ -142,4 +189,40 @@ pub fn record_offer(answer: &str) -> Result<()> {
     let mut cfg = load_config();
     cfg.hook_offer = Some(answer.to_string());
     save_config(&cfg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn removal_preserves_grouped_hooks_and_substring_matches() {
+        let unrelated = json!({"type":"command", "command":"echo glance"});
+        let mut entries = vec![
+            json!({"matcher":"startup", "hooks":[{"command":"'/a path/glance-panel' hook"}, unrelated.clone()]}),
+            json!({"hooks":[{"command":"/bin/glance-panel-helper hook"}]}),
+            json!({"hooks":[{"command":"/bin/glance-panel hook"}]}),
+        ];
+        remove_glance_hooks(&mut entries);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["hooks"], json!([unrelated]));
+        assert_eq!(entries[0]["matcher"], "startup");
+        let before = entries.clone();
+        remove_glance_hooks(&mut entries);
+        assert_eq!(entries, before);
+    }
+
+    #[test]
+    fn quoted_executable_round_trips_and_atomic_write_replaces() {
+        let exe = "/a path/it's/glance-panel";
+        let cmd = format!("{} hook", shell_words::quote(exe));
+        assert!(is_glance_command(&cmd));
+        assert_eq!(shell_words::split(&cmd).unwrap()[0], exe);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        atomic_write(&path, b"first").unwrap();
+        atomic_write(&path, b"second").unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), b"second");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
 }
