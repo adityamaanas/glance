@@ -29,11 +29,16 @@ fn cursor_setup_wrapper_capture_and_removal_preserve_user_settings() {
         );
         out
     };
+    let original = std::fs::read(&settings).unwrap();
     run(&["setup", "--harness", "cursor"]);
     let first = std::fs::read(&settings).unwrap();
     run(&["setup", "--harness", "cursor"]);
     assert_eq!(first, std::fs::read(&settings).unwrap());
-    assert!(settings.with_extension("json.bak-glance").exists());
+    // A repeated setup keeps the backup taken before Glance first changed the file.
+    assert_eq!(
+        std::fs::read(settings.with_extension("json.bak-glance")).unwrap(),
+        original
+    );
     // Actually execute the installed platform wrapper without inheriting GLANCE_HOME.
     let invoke = |event: Value| {
         #[cfg(windows)]
@@ -142,4 +147,43 @@ fn cursor_cli_stream_is_forwarded_and_captured_without_duplicate_result() {
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["turns"].as_array().unwrap().len(), 3);
     assert!(dir.path().join("cursor--same-id.stop").exists());
+}
+
+#[test]
+fn cursor_stream_forwards_everything_when_capture_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = include_bytes!("fixtures/cursor.jsonl");
+    // An invalid record and an oversized record must reach stdout unchanged, and
+    // capture must continue with the records after them.
+    let mut input = b"not json\n".to_vec();
+    input.extend_from_slice(fixture);
+    input.extend(std::iter::repeat_n(b'x', 9 * 1024 * 1024));
+    input.extend_from_slice(b"\ntrailing text without newline");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_glance-panel"))
+        .env("GLANCE_HOME", dir.path())
+        .arg("cursor-stream")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let writer = {
+        let input = input.clone();
+        std::thread::spawn(move || stdin.write_all(&input).unwrap())
+    };
+    let out = child.wait_with_output().unwrap();
+    writer.join().unwrap();
+    assert!(out.status.success());
+    assert_eq!(out.stdout, input);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("capture skipped"), "{stderr}");
+    let out = Command::new(env!("CARGO_BIN_EXE_glance-panel"))
+        .env("GLANCE_HOME", dir.path())
+        .args(["--harness", "cursor", "transcript", "--session", "same-id"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["turns"].as_array().unwrap().len(), 3);
 }
