@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Glance · Session graph</title>
+<style>
+:root{color-scheme:dark;--bg:#0c1e26;--panel:#142c35;--line:#34505a;--text:#e6efed;--dim:#a3bcc3;--accent:#76d8cc}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 system-ui,sans-serif}main{max-width:1120px;margin:auto;padding:40px 24px}header small{color:var(--accent);letter-spacing:.15em}h1{line-height:1.2;font-size:clamp(26px,4vw,44px);max-width:900px}p{color:var(--dim)}nav{display:flex;gap:12px;flex-wrap:wrap;margin:26px 0}input,select,button{font:inherit;color:inherit;border:1px solid var(--line);background:var(--panel);padding:10px 14px;border-radius:8px}input{flex:1;min-width:160px}button{cursor:pointer}button:hover,button:focus-visible{border-color:var(--accent)}#layout{display:grid;grid-template-columns:1fr 360px;gap:24px}.node{margin:0 0 12px calc(var(--depth)*min(24px,3vw));padding:14px 16px;border-left:2px solid var(--accent);background:var(--panel);border-radius:0 8px 8px 0}.meta{font-size:12px;color:var(--dim)}.node button{display:block;border:0;padding:4px 0;background:transparent;text-align:left;width:100%}.parent{font-size:12px;color:var(--accent)}aside{position:sticky;top:24px;align-self:start;border:1px solid var(--line);border-radius:10px;padding:20px;max-height:80vh;overflow:auto}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.7 ui-monospace,monospace}#empty{padding:24px;border:1px dashed var(--line)}@media(max-width:760px){#layout{grid-template-columns:1fr}aside{position:static;max-height:none}main{padding:24px 16px}}
+</style>
+<main><header><small>GLANCE / SESSION GRAPH</small><h1 id="title"></h1><p>Explore the work and the conversation behind it. This is a saved snapshot; summaries may be incomplete.</p></header>
+<nav aria-label="Filter graph"><input id="search" type="search" placeholder="Find an item…" aria-label="Search items"><select id="branch" aria-label="Workstream"><option value="">All workstreams</option></select></nav>
+<div id="layout"><section id="nodes" aria-label="Summary items"></section><aside aria-live="polite"><h2 id="detail-title">Evidence</h2><pre id="detail">Select an item to read its supporting transcript turns.</pre></aside></div></main>
+<script id="data" type="application/json">__GLANCE_DATA__</script>
+<script>
+const data=JSON.parse(document.getElementById('data').textContent), $=id=>document.getElementById(id);
+$('title').textContent=data.title||'Session graph';
+for(const name of [...new Set(data.nodes.map(n=>n.item.branch))]){const opt=document.createElement('option');opt.value=name;opt.textContent=name;$('branch').append(opt)}
+function select(n){$('detail-title').textContent=n.item.text;$('detail').textContent=n.evidence}
+function render(){const term=$('search').value.toLowerCase(),branch=$('branch').value;$('nodes').replaceChildren();let count=0;
+for(const [idx,depth] of data.rows){const n=data.nodes[idx],item=n.item;if(branch&&item.branch!==branch||term&&!`${item.text} ${item.kind} ${item.id}`.toLowerCase().includes(term))continue;
+const card=document.createElement('article');card.className='node';card.style.setProperty('--depth',Math.min(depth,8));
+const meta=document.createElement('div');meta.className='meta';meta.textContent=`${item.kind.toUpperCase()} · ${item.branch} · ${item.status||item.id}`;
+const button=document.createElement('button');button.textContent=item.text;button.onclick=()=>select(n);card.append(meta,button);
+if(item.from){const parent=data.nodes.find(p=>p.item.id===item.from);const link=document.createElement('button');link.className='parent';link.textContent=`↳ From: ${parent?parent.item.text:item.from}`;link.onclick=()=>{if(parent)select(parent)};card.append(link)}
+$('nodes').append(card);count++}
+if(!count){const empty=document.createElement('p');empty.id='empty';empty.textContent='No items match this view.';$('nodes').append(empty)}}
+$('search').addEventListener('input',render);$('branch').addEventListener('change',render);render();
+</script></html>
