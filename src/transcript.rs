@@ -37,6 +37,8 @@ pub struct Transcript {
     offset: u64,
     partial: Vec<u8>,
     tail: Vec<u8>,
+    /// Parsed records of a line-delimited agent transcript, kept so appends are parsed once.
+    records: Vec<Value>,
     pub revision: u64,
     pub free: Free,
     pub turns: Vec<Turn>,
@@ -111,6 +113,7 @@ impl Transcript {
             offset: 0,
             partial: Vec::new(),
             tail: Vec::new(),
+            records: Vec::new(),
             revision: 0,
             free: Free::default(),
             turns: Vec::new(),
@@ -126,7 +129,8 @@ impl Transcript {
 
     /// Read appended lines; returns how many turns were added. A missing file reads as empty.
     pub fn read_new(&mut self) -> Result<usize> {
-        if self.harness != crate::harness::Kind::Claude {
+        let claude = self.harness == crate::harness::Kind::Claude;
+        if !claude && !crate::harness::incremental(self.harness, &self.path) {
             let snapshot = crate::harness::read(self.harness, &self.path, &self.session_id)?;
             let previous = self.turns.len();
             if !snapshot.turns.starts_with(&self.turns) {
@@ -152,6 +156,7 @@ impl Transcript {
             self.offset = 0;
             self.partial.clear();
             self.tail.clear();
+            self.records.clear();
             self.turns.clear();
             self.free = Free::default();
             self.revision = self.revision.wrapping_add(1);
@@ -159,6 +164,7 @@ impl Transcript {
         file.seek(SeekFrom::Start(self.offset))?;
         let mut reader = BufReader::new(file);
         let before = self.turns.len();
+        let records_before = self.records.len();
         let mut buf = Vec::new();
         loop {
             buf.clear();
@@ -173,7 +179,11 @@ impl Transcript {
             }
             let line = std::mem::take(&mut self.partial);
             if let Ok(v) = serde_json::from_slice::<Value>(&line) {
-                self.ingest(&v);
+                if claude {
+                    self.ingest(&v);
+                } else {
+                    self.records.push(v);
+                }
             }
         }
         let mut file = reader.into_inner();
@@ -181,7 +191,17 @@ impl Transcript {
         file.seek(SeekFrom::Start(self.offset - tail_len as u64))?;
         self.tail.resize(tail_len, 0);
         file.read_exact(&mut self.tail)?;
-        Ok(self.turns.len() - before)
+        if !claude && (replaced || self.records.len() != records_before) {
+            // Folding parsed records is in-memory; only new bytes were read and parsed.
+            let snapshot = crate::harness::fold(self.harness, &self.records)?;
+            crate::harness::check_id(&snapshot, &self.session_id)?;
+            if !snapshot.turns.starts_with(&self.turns) {
+                self.revision = self.revision.wrapping_add(1);
+            }
+            self.turns = snapshot.turns;
+            self.free = snapshot.free;
+        }
+        Ok(self.turns.len().saturating_sub(before))
     }
 
     fn ingest(&mut self, v: &Value) {
@@ -437,6 +457,28 @@ pub fn clip(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn incremental_agent_reads_match_a_whole_file_parse() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("codex.jsonl");
+        let fixture = include_bytes!("../tests/fixtures/codex.jsonl");
+        let split = fixture.len() / 2;
+        std::fs::write(&path, &fixture[..split]).unwrap();
+        let mut tr = super::Transcript::open_for(&path, crate::harness::Kind::Codex, "same-id");
+        tr.read_new().unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(&fixture[split..]).unwrap();
+        tr.read_new().unwrap();
+        let whole = crate::harness::parse(crate::harness::Kind::Codex, fixture).unwrap();
+        assert_eq!(tr.turns, whole.turns);
+        assert_eq!(tr.revision, 0);
+        assert!(tr.offset > 0 && tr.records.len() > 1);
+    }
+
     #[test]
     fn adapter_append_and_rollback_update_the_transcript_generation() {
         use std::io::Write;
