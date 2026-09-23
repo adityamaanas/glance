@@ -1,0 +1,70 @@
+name: Release archive and installer smoke tests
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  installers:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: cargo-dist-cache
+          path: .dist-bin
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-build-local-*
+          path: target/distrib
+          merge-multiple: true
+      - name: Generate installers against the built artifacts
+        env:
+          RELEASE_TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+        run: |
+          chmod +x .dist-bin/dist
+          .dist-bin/dist build --artifacts=global --tag="$RELEASE_TAG"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-smoke-installers
+          path: target/distrib/glance-panel-installer.*
+  archive:
+    needs: installers
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-22.04, target: x86_64-unknown-linux-gnu}
+          - {os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu}
+          - {os: macos-14, target: aarch64-apple-darwin}
+          - {os: macos-15-intel, target: x86_64-apple-darwin}
+          - {os: windows-2022, target: x86_64-pc-windows-msvc}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-build-local-*
+          path: target/release-smoke-artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-smoke-installers
+          path: target/release-smoke-artifacts
+      - name: Verify archive and exercise the native installer
+        env:
+          TARGET: ${{ matrix.target }}
+        run: python tests/release_smoke.py target/release-smoke-artifacts

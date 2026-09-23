@@ -3,10 +3,12 @@ name = "glance-panel"
 version = "0.2.0"
 edition = "2021"
 rust-version = "1.88"
-description = "glance: a live orientation panel for one Claude Code session, rendered in a herdr split pane."
+description = "A live orientation panel for coding-agent sessions, with plans, evidence, graphs and personal todos."
 license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/adityamaanas/glance"
+homepage = "https://github.com/adityamaanas/glance"
+include = ["src/**", "tests/**", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "CHANGELOG.md", "docs/**", "assets/**"]
 keywords = ["claude-code", "herdr", "tui", "terminal", "ai"]
 categories = ["command-line-utilities", "development-tools"]
 
@@ -34,4 +36,9 @@ libc = "0.2"
 
 [profile.release]
 opt-level = 2
+lto = "thin"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
 lto = "thin"

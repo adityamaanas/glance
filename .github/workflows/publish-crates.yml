@@ -1,0 +1,52 @@
+name: Publish crate
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag (for example v0.3.0)
+        required: true
+        type: string
+      publish:
+        description: Publish after validation (false runs a dry run only)
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  crate:
+    runs-on: ubuntu-24.04
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check tag version and reviewed ancestry
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python3 - <<'PY'
+          import os, re, subprocess, tomllib
+          tag = os.environ['RELEASE_TAG']
+          assert re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?', tag), 'expected a version tag'
+          version = tomllib.load(open('Cargo.toml', 'rb'))['package']['version']
+          assert tag == f'v{version}', 'tag must match Cargo.toml'
+          tagged = subprocess.check_output(['git', 'rev-parse', f'refs/tags/{tag}^{{commit}}'], text=True).strip()
+          head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert tagged == head, 'checkout must match the existing tag'
+          subprocess.run(['git', 'merge-base', '--is-ancestor', 'HEAD', 'origin/main'], check=True)
+          PY
+      - run: cargo test --locked --all-targets
+      - run: cargo publish --locked --dry-run
+      - name: Publish reviewed crate
+        if: inputs.publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          test -n "$CARGO_REGISTRY_TOKEN" || { echo 'Configure CARGO_REGISTRY_TOKEN in the crates-io environment'; exit 1; }
+          cargo publish --locked
