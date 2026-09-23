@@ -41,7 +41,7 @@ Environment overrides: `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GLANCE_GEMINI_HOME`, 
 
 The adapter flag selects the transcript reader. This change retains the existing Claude summary backend; provider-specific summary commands are a separate follow-up. Use `--no-model` for local fields, personal todos, and compatible cached summaries without model calls.
 
-Discovery samples the first and last 64 KiB of files; legacy Gemini JSON may require a full read. Snapshot reads are bounded at 128 MiB per file. Project filtering requires recorded working-directory metadata, which some Gemini and Cursor exports omit. Use an explicit session or transcript in that case.
+Discovery samples the first and last 64 KiB of files; legacy Gemini JSON may require a full read. JSONL transcripts are read incrementally: only appended bytes are parsed, and a rewrite of earlier content triggers a fresh read. Whole-file exports (legacy Gemini JSON, OpenCode JSON, Cursor text) are re-read on change and bounded at 128 MiB per file. Lookup by session ID checks files whose names contain the ID first. Project filtering requires recorded working-directory metadata, which some Gemini and Cursor exports omit. Use an explicit session or transcript in that case.
 
 pi reflects the latest persisted branch, so moving its in-memory selection without saving another entry may not be visible. OpenCode's message/part schema is supported; unsupported database schemas should use a compatible JSON export. The adapters have synthetic fixtures and Windows/Linux tests, including rollback, deduplication, namespace isolation, and read-only WAL access. Live compatibility still depends on the installed agent version.
 

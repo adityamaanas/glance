@@ -126,10 +126,33 @@ pub fn read(kind: Kind, path: &Path, id: &str) -> Result<Snapshot> {
         bail!("transcript exceeds the 128 MiB adapter limit; export a smaller session");
     }
     let snapshot = parse(kind, &bytes)?;
+    check_id(&snapshot, id)?;
+    Ok(snapshot)
+}
+
+pub fn check_id(snapshot: &Snapshot, id: &str) -> Result<()> {
     if !id.is_empty() && snapshot.id.as_ref().is_some_and(|found| found != id) {
         bail!("transcript session ID does not match {id}");
     }
-    Ok(snapshot)
+    Ok(())
+}
+
+/// Line-delimited transcripts can be read incrementally; exports and databases are read whole.
+pub fn incremental(kind: Kind, path: &Path) -> bool {
+    !matches!(kind, Kind::Claude | Kind::Opencode)
+        && path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+}
+
+/// Interpret already-parsed records of a line-delimited transcript.
+pub fn fold(kind: Kind, records: &[Value]) -> Result<Snapshot> {
+    let out = match kind {
+        Kind::Codex => codex(records),
+        Kind::Gemini => gemini(records),
+        Kind::Pi => pi(records),
+        Kind::Cursor => cursor(records, &[]),
+        Kind::Opencode | Kind::Claude => bail!("{} is not read record by record", kind.name()),
+    };
+    Ok(finish(kind, out))
 }
 
 pub fn parse(kind: Kind, bytes: &[u8]) -> Result<Snapshot> {
@@ -143,7 +166,7 @@ pub fn parse(kind: Kind, bytes: &[u8]) -> Result<Snapshot> {
             .filter_map(|line| serde_json::from_slice(line).ok())
             .collect()
     };
-    let mut out = match kind {
+    let out = match kind {
         Kind::Codex => codex(&records),
         Kind::Gemini => gemini(&records),
         Kind::Pi => pi(&records),
@@ -151,6 +174,10 @@ pub fn parse(kind: Kind, bytes: &[u8]) -> Result<Snapshot> {
         Kind::Opencode => opencode_export(whole.as_ref().context("invalid OpenCode JSON export")?),
         Kind::Claude => bail!("Claude uses its incremental transcript reader"),
     };
+    Ok(finish(kind, out))
+}
+
+fn finish(kind: Kind, mut out: Snapshot) -> Snapshot {
     out.free.agent = Some(kind.name().into());
     out.free.last_prompt = out.turns.iter().rev().find_map(|t| {
         if let Turn::User(s) = t {
@@ -169,7 +196,7 @@ pub fn parse(kind: Kind, bytes: &[u8]) -> Result<Snapshot> {
     if out.free.custom_title.is_none() && out.free.title.is_none() {
         out.free.title = Some(format!("{} session", kind.name()));
     }
-    Ok(out)
+    out
 }
 
 fn codex(records: &[Value]) -> Snapshot {
@@ -247,7 +274,10 @@ fn gemini(records: &[Value]) -> Snapshot {
             messages = list.clone();
         }
         if let Some(id) = v["$rewindTo"].as_str() {
-            messages.truncate(messages.iter().position(|m| m["id"] == id).unwrap_or(0));
+            // An unknown target (for example outside a partial read) leaves history intact.
+            if let Some(index) = messages.iter().position(|m| m["id"] == id) {
+                messages.truncate(index);
+            }
         } else if v["id"].is_string() && v["type"].is_string() {
             if let Some(index) = messages.iter().position(|m| m["id"] == v["id"]) {
                 messages[index] = v.clone();
@@ -579,7 +609,14 @@ pub fn locate(kind: Kind, id: &str, explicit: Option<&Path>) -> Result<PathBuf> 
         }
         return Ok(path);
     }
-    for path in files(kind)? {
+    // Agents usually put the session ID in the file name; check those files first.
+    let mut paths = files(kind)?;
+    paths.sort_by_key(|p| {
+        !p.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.contains(id))
+    });
+    for path in paths {
         if inspect(kind, &path).ok().and_then(|s| s.id).as_deref() == Some(id) {
             return Ok(path);
         }
