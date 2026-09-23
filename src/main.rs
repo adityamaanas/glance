@@ -4,6 +4,7 @@ mod herdr;
 mod setup;
 mod summary;
 mod transcript;
+mod transport;
 mod view;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -38,12 +39,25 @@ struct Cli {
     /// Never call the model; show free fields and the cached summary only.
     #[arg(long)]
     no_model: bool,
+    /// Summary model (overrides GLANCE_MODEL and config.json).
+    #[arg(long, global = true)]
+    model: Option<String>,
+    /// Minimum seconds between summary calls (default 30).
+    #[arg(long, global = true)]
+    refresh_seconds: Option<u64>,
     #[command(subcommand)]
     command: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Remove old summary caches; personal configuration and todos are preserved.
+    CacheClean {
+        #[arg(long, default_value_t = 30)]
+        older_than_days: u64,
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// From inside a Claude Code pane: split right and start the panel there.
     Attach {
         /// Fraction of the width the new pane takes.
@@ -74,14 +88,47 @@ enum Msg {
     Status(String),
     Key(KeyCode, KeyModifiers),
     Tick,
-    Summary(Result<Summary>, usize, u64),
+    Summary(Box<Result<Summary>>, usize, u64),
 }
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    let cfg = if matches!(
+        cli.command,
+        Some(Cmd::Hook {
+            install: false,
+            uninstall: false
+        })
+    ) {
+        setup::Config::default()
+    } else {
+        setup::read_config()?
+    };
+    summary::configure(cli.model.as_deref(), &cfg);
+    cli.no_model |= cfg.no_model;
+    cli.refresh_seconds = cli.refresh_seconds.or(cfg.refresh_seconds);
+    if cli.command.is_none() {
+        if let Some(days) = cfg.cache_retention_days {
+            summary::clean_cache(days, false)?;
+        }
+    }
     match cli.command {
+        Some(Cmd::CacheClean {
+            older_than_days,
+            dry_run,
+        }) => {
+            for path in summary::clean_cache(older_than_days, dry_run)? {
+                println!("{}", path.display());
+            }
+            Ok(())
+        }
         Some(Cmd::Attach { ratio, force }) => attach(ratio, force),
-        Some(Cmd::Summarize { session }) => summarize_once(&session),
+        Some(Cmd::Summarize { session }) => {
+            if cli.no_model {
+                bail!("model calls disabled by --no-model or config.json");
+            }
+            summarize_once(&session)
+        }
         Some(Cmd::Hook { install: true, .. }) => {
             println!("{}", setup::install_hook()?);
             Ok(())
@@ -270,8 +317,19 @@ fn summarize_once(session: &str) -> Result<()> {
     let path = transcript::find_transcript(session)?;
     let mut tr = Transcript::open(&path);
     tr.read_new()?;
-    let text = summary::pending_text(&tr, 0);
-    let s = summary::summarize(&Summary::default(), &text, tr.free.title.as_deref())?;
+    let mut s = Summary::default();
+    let mut from = 0;
+    while from < tr.turns.len() {
+        let (text, end) = summary::pending_chunk(&tr, from);
+        eprintln!(
+            "Summarizing turns {}–{} of {}",
+            from + 1,
+            end,
+            tr.turns.len()
+        );
+        s = summary::summarize(&s, &text, tr.free.title.as_deref())?;
+        from = end;
+    }
     println!("{}", serde_json::to_string_pretty(&s)?);
     // Seed the cache so a panel opened on this session starts from this pass.
     let cache = Cache {
@@ -296,6 +354,8 @@ struct App {
     agent_status: Option<String>,
     analyzing: bool,
     generation: u64,
+    refresh_seconds: u64,
+    last_summary_started: Option<Instant>,
     dirty: bool,
     last_growth: Option<Instant>,
     error: Option<String>,
@@ -331,6 +391,7 @@ impl App {
                     source: summary::model(),
                 };
                 self.error = None;
+                self.dirty |= turns_done < self.tr.turns.len();
                 true
             }
             Err(e) => {
@@ -435,6 +496,8 @@ fn run(cli: Cli) -> Result<()> {
         agent_status,
         analyzing: false,
         generation: 0,
+        refresh_seconds: cli.refresh_seconds.unwrap_or(30),
+        last_summary_started: None,
         dirty: true,
         last_growth: Some(Instant::now() - Duration::from_secs(10)),
         error: None,
@@ -609,6 +672,7 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                 KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => return Ok(()),
                 KeyCode::Char('r') => {
+                    app.last_summary_started = None;
                     app.dirty = true;
                     app.last_growth = Some(Instant::now() - Duration::from_secs(10));
                     app.cache.turns_done = app
@@ -638,7 +702,7 @@ fn event_loop(app: &mut App, rx: &Receiver<Msg>, terminal: &mut Term) -> Result<
             },
             Msg::Tick => {}
             Msg::Summary(result, turns_done, generation) => {
-                if app.finish_summary(result, turns_done, generation) {
+                if app.finish_summary(*result, turns_done, generation) {
                     if let Err(e) = summary::save_cache(&app.session_id, &app.cache) {
                         app.error = Some(e.to_string());
                     }
@@ -693,6 +757,7 @@ fn follow_session_change(app: &mut App) {
     app.session_id = sid;
     app.generation = app.generation.wrapping_add(1);
     app.analyzing = false;
+    app.last_summary_started = None;
     app.pinned = false;
     app.focus_override = None;
     app.dirty = true;
@@ -713,6 +778,12 @@ fn maybe_summarize(app: &mut App) {
     if app.agent_status.as_deref() == Some("working") {
         return;
     }
+    if app
+        .last_summary_started
+        .is_some_and(|t| t.elapsed() < Duration::from_secs(app.refresh_seconds))
+    {
+        return;
+    }
     let settled = app
         .last_growth
         .map(|t| t.elapsed() >= Duration::from_secs(2))
@@ -720,7 +791,7 @@ fn maybe_summarize(app: &mut App) {
     if !settled {
         return;
     }
-    let text = summary::pending_text(&app.tr, app.cache.turns_done);
+    let (text, turns_done) = summary::pending_chunk(&app.tr, app.cache.turns_done);
     let prev = app.cache.summary.clone();
     let title = app
         .tr
@@ -728,14 +799,14 @@ fn maybe_summarize(app: &mut App) {
         .custom_title
         .clone()
         .or_else(|| app.tr.free.title.clone());
-    let turns_done = app.tr.turns.len();
     let generation = app.generation;
     let tx = app.tx.clone();
     app.analyzing = true;
+    app.last_summary_started = Some(Instant::now());
     app.dirty = false;
     thread::spawn(move || {
         let result = summary::summarize(&prev, &text, title.as_deref());
-        let _ = tx.send(Msg::Summary(result, turns_done, generation));
+        let _ = tx.send(Msg::Summary(Box::new(result), turns_done, generation));
     });
 }
 
@@ -777,6 +848,8 @@ mod tests {
             agent_status: None,
             analyzing: true,
             generation: 2,
+            refresh_seconds: 30,
+            last_summary_started: None,
             dirty: false,
             last_growth: None,
             error: None,

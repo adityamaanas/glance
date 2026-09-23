@@ -588,6 +588,20 @@ fn footer(s: &ViewState) -> Paragraph<'static> {
         format!(" {} · updated {age_txt}", s.source),
         Style::default().fg(DIM),
     )];
+    if let Some(usage) = &s.summary.usage {
+        let cost = usage
+            .estimated_usd
+            .map(|v| {
+                // "+" marks a lower bound: some calls reported no estimate.
+                let more = if usage.unpriced > 0 { "+" } else { "" };
+                format!(" · ~${v:.3}{more}")
+            })
+            .unwrap_or_default();
+        spans.push(Span::styled(
+            format!(" · {} calls{cost}", usage.calls),
+            Style::default().fg(DIM),
+        ));
+    }
     if s.waiting {
         spans.push(Span::styled(
             "  waiting for the first prompt",

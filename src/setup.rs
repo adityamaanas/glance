@@ -10,8 +10,20 @@ const MATCHER: &str = "startup|resume|clear|fork";
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Config {
     /// "accepted" or "declined" once the user has answered the hook offer.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hook_offer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_model: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_retention_days: Option<u64>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -26,6 +38,14 @@ pub fn load_config() -> Config {
         .unwrap_or_default()
 }
 
+pub fn read_config() -> Result<Config> {
+    let path = config_path()?;
+    if !path.exists() {
+        return Ok(Config::default());
+    }
+    serde_json::from_str(&std::fs::read_to_string(&path)?).context("parse ~/.glance/config.json")
+}
+
 pub fn save_config(cfg: &Config) -> Result<()> {
     atomic_write(
         &config_path()?,
@@ -35,9 +55,7 @@ pub fn save_config(cfg: &Config) -> Result<()> {
 }
 
 fn settings_path() -> Result<PathBuf> {
-    Ok(dirs::home_dir()
-        .ok_or_else(|| anyhow!("no home dir"))?
-        .join(".claude/settings.json"))
+    Ok(crate::transcript::claude_dir()?.join("settings.json"))
 }
 
 fn read_settings() -> Result<Value> {
@@ -159,8 +177,8 @@ pub fn install_hook() -> Result<String> {
     }));
     write_settings(&settings)?;
     // Retire the shell-script version if it is still around.
-    if let Some(home) = dirs::home_dir() {
-        let _ = std::fs::remove_file(home.join(".claude/hooks/glance-attach.sh"));
+    if let Ok(dir) = crate::transcript::claude_dir() {
+        let _ = std::fs::remove_file(dir.join("hooks/glance-attach.sh"));
     }
     Ok(format!(
         "SessionStart hook registered in {} ({command})",
@@ -194,6 +212,16 @@ pub fn record_offer(answer: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_config_omits_unset_options_and_keeps_unknown_keys() {
+        let cfg: Config =
+            serde_json::from_value(json!({"hook_offer":"accepted","custom":1})).unwrap();
+        assert_eq!(
+            serde_json::to_value(&cfg).unwrap(),
+            json!({"hook_offer":"accepted","custom":1})
+        );
+    }
 
     #[test]
     fn removal_preserves_grouped_hooks_and_substring_matches() {

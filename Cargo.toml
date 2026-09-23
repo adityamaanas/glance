@@ -2,7 +2,7 @@
 name = "glance-panel"
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.88"
 description = "glance: a live orientation panel for one Claude Code session, rendered in a herdr split pane."
 license = "Apache-2.0"
 readme = "README.md"
@@ -24,6 +24,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 shell-words = "1"
 tempfile = "3"
+interprocess = "2.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
