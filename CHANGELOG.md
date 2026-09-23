@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Release notes no longer suggest `brew install glance-panel`, which does not work until a Homebrew tap exists. Use the one-line installers.
+
 ## 0.3.0 (2026-09-23)
 
 First release with prebuilt binaries and one-line installers. Existing summary caches rebuild once after upgrading.
