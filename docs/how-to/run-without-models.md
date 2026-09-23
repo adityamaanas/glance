@@ -48,7 +48,8 @@ Remove the hooks before deleting the binary, so your agents do not keep calling 
 ```sh
 glance-panel setup --remove                  # Claude Code hooks
 glance-panel setup --harness cursor --remove # Cursor hooks, if you installed them
-cargo uninstall glance-panel
 ```
 
-Then delete `~/.glance/` if you want to remove all stored data.
+Then delete the `glance-panel` binary from `~/.cargo/bin` (`%USERPROFILE%\.cargo\bin\glance-panel.exe` on Windows), or run `cargo uninstall glance-panel` if you built it with Cargo.
+
+Finally, delete `~/.glance/` if you want to remove all stored data.

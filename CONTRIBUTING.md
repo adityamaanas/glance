@@ -41,7 +41,8 @@ For visual changes, check narrow and wide layouts, Unicode width, and light and 
 Follow the [documentation standard](docs/STANDARD.md). In short:
 
 - Put each change in the right kind of page: the [getting-started tutorial](docs/getting-started.md), a task-focused [how-to guide](docs/how-to/), a [reference](docs/reference/) page, or an [explanation](docs/explanation/).
-- Update docs in the same PR as the behavior change, and add a user-facing line to `CHANGELOG.md` under "Unreleased".
+- Update docs in the same PR as the behavior change, and add a user-facing line to `CHANGELOG.md` under "Unreleased". CI requires this whenever `src/` changes; for internal-only changes (refactors, tests), add the `no-changelog` label instead.
+- Don't bump the version in feature PRs; it changes only in a release PR.
 - After changing a command or flag, regenerate the command-line reference with `GLANCE_UPDATE_DOCS=1 cargo test --test cli_reference`.
 - After changing the panel's layout, regenerate the screenshots with `cargo build --release && python3 scripts/capture-screens.py` (needs tmux).
 - Check links with `python3 scripts/check-docs.py`.

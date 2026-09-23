@@ -4,7 +4,13 @@
 
 Glance runs natively on Windows. Following a session in its own terminal window works everywhere; herdr integration needs one extra setting.
 
-**You need:** Glance installed with Rust 1.88 or newer (`cargo install --locked --git https://github.com/adityamaanas/glance`), and your agent installed.
+**You need:** your agent installed, and Glance. Install Glance in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/adityamaanas/glance/releases/latest/download/glance-panel-installer.ps1 | iex"
+```
+
+This installs `glance-panel.exe` into `%USERPROFILE%\.cargo\bin` and adds it to your `PATH`; open a new terminal afterwards.
 
 ## Follow a session
 

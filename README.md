@@ -32,13 +32,13 @@ It reads only; it never types into your session or changes its files.
 
 ## Install
 
-Glance has no published release yet. Build it with [Rust](https://www.rust-lang.org/tools/install) 1.88 or newer:
+| Platform | Command |
+| --- | --- |
+| macOS and Linux | `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/adityamaanas/glance/releases/latest/download/glance-panel-installer.sh | sh` |
+| Windows (PowerShell) | `powershell -ExecutionPolicy Bypass -c "irm https://github.com/adityamaanas/glance/releases/latest/download/glance-panel-installer.ps1 | iex"` |
+| From source ([Rust](https://www.rust-lang.org/tools/install) 1.88+) | `cargo install --locked --git https://github.com/adityamaanas/glance` |
 
-```sh
-cargo install --locked --git https://github.com/adityamaanas/glance
-```
-
-This installs the `glance-panel` command on Windows, macOS or Linux. Prebuilt archives and installers are prepared for five platforms and will be listed here with the first release ([details](docs/maintainers/releasing.md)).
+The installers download a prebuilt binary for your platform (macOS Intel and Apple Silicon, Linux x86-64 and ARM64, Windows x86-64) into `~/.cargo/bin` and add it to your `PATH` if needed; no Rust is required. Check with `glance-panel --version`. Prefer to inspect first? Download the installer or an archive and its checksum from the [releases page](https://github.com/adityamaanas/glance/releases).
 
 ## Quick start
 

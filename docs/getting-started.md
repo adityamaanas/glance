@@ -6,7 +6,6 @@ In about ten minutes you will install Glance, open it beside a Claude Code sessi
 
 **You need:**
 
-- [Rust](https://www.rust-lang.org/tools/install) 1.88 or newer (`rustc --version` to check). Glance has no published release yet, so you build it from source.
 - [Claude Code](https://code.claude.com/docs), installed and logged in. Glance uses your Claude login to write summaries.
 - A terminal where you can put two panes or windows side by side.
 
@@ -14,8 +13,23 @@ Using a different agent? Finish this tutorial with Claude Code if you can, then 
 
 ## 1. Install Glance
 
+On macOS or Linux:
+
 ```sh
-cargo install --locked --git https://github.com/adityamaanas/glance
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/adityamaanas/glance/releases/latest/download/glance-panel-installer.sh | sh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/adityamaanas/glance/releases/latest/download/glance-panel-installer.ps1 | iex"
+```
+
+The installer puts a prebuilt `glance-panel` into `~/.cargo/bin` and adds that directory to your `PATH` if needed; open a new terminal afterwards. With [Rust](https://www.rust-lang.org/tools/install) 1.88 or newer you can build from source instead: `cargo install --locked --git https://github.com/adityamaanas/glance`.
+
+Check it worked:
+
+```sh
 glance-panel --version
 ```
 
