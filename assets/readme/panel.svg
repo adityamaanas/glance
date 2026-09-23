@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+  <title id="title">The conversation and its context, side by side</title>
+  <desc id="desc">Fictional split-pane illustration. Claude Code investigates a retry bug. Glance shows the goal, current test verification, two completed steps, one active step, an open question, and a decision.</desc>
+  <rect width="1200" height="620" rx="18" fill="#0c1e26"/>
+  <path d="M0 48H1200M690 48V580" stroke="#304952"/>
+  <circle cx="25" cy="24" r="5" fill="#efb78b"/><circle cx="45" cy="24" r="5" fill="#7799a4"/><circle cx="65" cy="24" r="5" fill="#76d8cc"/>
+  <g font-family="Consolas, Menlo, monospace">
+    <text x="98" y="29" fill="#bed0d3" font-size="13">herdr · payments / fix-retries</text>
+    <text x="1025" y="29" fill="#83a4ad" font-size="11">ILLUSTRATION</text>
+    <g transform="translate(34 87)" font-size="16">
+      <text fill="#edb58c" font-size="12" letter-spacing="1.5">CLAUDE CODE</text>
+      <text y="45" fill="#edf4f0">› Fix duplicate charges when a request retries.</text>
+      <text y="95" fill="#bdcdd0">I'll trace the request lifecycle and add</text>
+      <text y="122" fill="#bdcdd0">a regression test for the retry path.</text>
+      <text y="177" fill="#76d8cc">✓ Read src/payments/retry.rs</text>
+      <text y="211" fill="#76d8cc">✓ Added the failing regression test</text>
+      <text y="245" fill="#76d8cc">✓ Reuse the original idempotency key</text>
+      <text y="300" fill="#bdcdd0">The focused test passes. I'm checking</text>
+      <text y="327" fill="#bdcdd0">the full suite before wrapping up.</text>
+      <rect y="365" width="617" height="70" rx="7" fill="#142c35"/>
+      <text x="18" y="392" fill="#8eacb4" font-size="12">BASH</text>
+      <text x="18" y="420" fill="#e1eae7">cargo test --all-targets</text>
+    </g>
+    <g transform="translate(718 87)" font-size="15">
+      <text fill="#edf4f0" font-size="17">Fix duplicate retry charges</text>
+      <text y="30" fill="#8eacb4" font-size="12">fix-retries · PR #42</text>
+      <text y="75" fill="#76d8cc" font-size="12" letter-spacing="1">WHAT WE ARE WORKING ON</text>
+      <text y="102" fill="#edf4f0">Make payment retries safe.</text>
+      <text y="143" fill="#76d8cc" font-size="12" letter-spacing="1">NOW</text>
+      <text y="170" fill="#edb58c">▶ Checking the full test suite.</text>
+      <text y="211" fill="#76d8cc" font-size="12" letter-spacing="1">PLAN  2/3</text>
+      <text y="238" fill="#8eacb4">✓ Reproduce the duplicate charge</text>
+      <text y="265" fill="#8eacb4">✓ Preserve the idempotency key</text>
+      <text y="292" fill="#edf4f0">▶ Verify tests and update the PR</text>
+      <text y="333" fill="#76d8cc" font-size="12" letter-spacing="1">OPEN QUESTIONS</text>
+      <text y="360" fill="#e1cfeb">? Backport to the stable release?</text>
+      <text y="401" fill="#76d8cc" font-size="12" letter-spacing="1">DECISIONS</text>
+      <text y="428" fill="#edf4f0">· Keep one key across every retry.</text>
+    </g>
+    <path d="M24 578H1176" stroke="#304952"/>
+    <text x="34" y="603" fill="#8eacb4" font-size="12">Your conversation keeps moving.</text>
+    <text x="718" y="603" fill="#8eacb4" font-size="12">updated 8s ago  ·  v rail  ·  q quit</text>
+  </g>
+</svg>

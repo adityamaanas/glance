@@ -1,153 +1,107 @@
-<p><img src="assets/logo/glance-lockup.svg" alt="glance" width="240"></p>
+<div align="center">
 
-# glance
+<img src="assets/readme/hero.svg" alt="glance — Pick up where you left off. A live orientation panel for your Claude Code session." width="960">
 
-A live orientation panel for one Claude Code session, shown in a herdr split pane
-beside the session. It answers "what are we working on, what is happening now,
-what is the plan and how far along is it, what is open, what was decided" so
-that coming back to a session after a break takes a glance instead of a re-read.
+[![CI](https://github.com/adityamaanas/glance/actions/workflows/ci.yml/badge.svg)](https://github.com/adityamaanas/glance/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-76d8cc?labelColor=172c35)](LICENSE)
+[![Built with Rust](https://img.shields.io/badge/built%20with-Rust-efb78b?labelColor=172c35)](Cargo.toml)
 
-Nothing about how you use Claude Code changes. glance only reads.
+**Your session, back in focus.**
 
-## How it works
+A live panel beside Claude Code: the goal, the current work, the plan, and the loose ends.
+Come back after a break without rereading the conversation.
 
-```
-herdr tab
-┌──────────────────────────────┬──────────────┐
-│ Claude Code (pane A)         │ glance       │
-│                              │ (pane B)     │
-└──────────────────────────────┴──────────────┘
-        │ writes transcript            ▲
-        ▼                              │ tails
-~/.claude/projects/<slug>/<session>.jsonl
-```
+[Quick start](#quick-start) · [User guide](docs/usage.md) · [How it works](docs/architecture.md) · [Roadmap](ROADMAP.md) · [Contribute](CONTRIBUTING.md)
 
-1. `glance-panel attach`, run inside a Claude Code pane, asks herdr to split the
-   pane to the right and starts `glance-panel --pane <A>` in the new pane.
-2. The panel asks herdr which Claude session lives in pane A (herdr's Claude
-   integration reports it) and tails that transcript.
-3. Free fields come straight from the transcript: title, branch or worktree,
-   linked PR, cost, last message from Claude.
-4. herdr's `pane.agent_status_changed` event says when a turn ends. The panel
-   then runs `claude -p` with Sonnet on your Claude subscription over the turns
-   since the last pass and updates topline, now, plan, open questions, decisions
-   and blockers. The result is cached in `~/.glance/<session>.json`, so a
-   reopened panel is instant and the model only runs when the transcript grew.
+</div>
 
-The helper `claude -p` call runs with the `HERDR_*` variables removed (so herdr
-does not register it as an agent), with session persistence off (no transcript
-left behind), with no tools, and with no settings sources.
+---
 
-## Requirements
+## See the work at a glance
 
-- macOS or Linux. Windows is on the roadmap; the herdr transport and the hook
-  need a named-pipe client and a shell-free entry point first.
-- [herdr](https://herdr.dev) 0.8 or later with its Claude integration installed
-  (`herdr integration install claude`). herdr is how glance learns which session
-  lives in the neighbouring pane and when a turn ends.
-- Claude Code from the 2.1 line, logged in. Summaries run through `claude -p`
-  on your own login; no API key.
+<img src="assets/readme/panel.svg" alt="Illustrative split-pane layout: a Claude Code conversation beside a Glance panel showing the goal, current work, plan, an open question, and a decision." width="960">
 
-## Install
+*Illustrative example using fictional session content. The terminal layout adapts to your pane.*
+
+| Keep your bearings | Follow the details |
+| :--- | :--- |
+| **One stable goal.** Remember what the session is working toward. | **A living plan.** See completed steps, current work, and blockers. |
+| **The open loops.** Keep unanswered questions and decisions in view. | **Separate workstreams.** Focus on one thread or see the whole session. |
+| **A quick return.** Cached summaries appear when you reopen the panel. | **A second perspective.** Switch to the rail to see items arranged by workstream. |
+
+Glance reads the transcript Claude Code already writes. It does not edit that transcript or direct the agent's work. Model summaries run through a separate `claude -p` invocation on your configured Claude login.
+
+## Quick start
+
+**Currently supported:** macOS and Linux, Claude Code 2.1, and [herdr](https://herdr.dev) 0.8+ for automatic pane attachment. Claude Code must be installed and logged in. Building from source requires a current stable Rust toolchain. Windows and additional agents are [planned](ROADMAP.md).
 
 ```sh
-cargo install glance-panel                 # from crates.io, once published
-cargo install --git https://github.com/adityamaanas/glance   # or straight from the repo
-cargo install --path .                     # from a checkout
+# Install from source
+cargo install --git https://github.com/adityamaanas/glance
+
+# Enable herdr's Claude integration
+herdr integration install claude
+
+# Run inside the herdr pane hosting Claude Code
+glance-panel attach
 ```
 
-The binary is `glance-panel` (the name `glance` is taken by other tools).
-Prebuilt binaries and a Homebrew tap are on the roadmap.
+In a running Claude Code conversation, use `! glance-panel attach` to run the command in that pane.
 
-## Privacy
+The first panel offers to open automatically for future sessions. Accept with `y`, or decline with `n`. Change this later with `glance-panel hook --install` or `glance-panel hook --uninstall`.
 
-glance reads the transcript Claude Code already writes to disk. The only place
-any of it goes is Anthropic, through your own `claude -p` call, the same as
-typing into Claude Code. The helper call runs with session persistence off, no
-tools, and no settings sources. Nothing is sent anywhere else and nothing is
-collected.
-
-## Automatic attach (SessionStart hook)
-
-The first time the panel opens it asks, in a banner, whether to open glance
-automatically for every Claude Code session. `y` registers `glance-panel hook` as a
-SessionStart hook (startup, resume, clear, fork) in `~/.claude/settings.json`,
-merging into whatever is there and keeping a backup at
-`settings.json.bak-glance`. `n` records the answer in `~/.glance/config.json`
-and never asks again. The same can be done by hand:
+**Using another terminal?** Open your own split and follow a known session ID:
 
 ```sh
-glance-panel hook --install
-glance-panel hook --uninstall
+glance-panel --session <session-id>
 ```
 
-`glance-panel hook` reads the hook JSON on stdin and always exits 0. It does nothing
-outside herdr, for subagents, and for `claude -p` runs, and logs one line per
-decision to `~/.glance/hook.log`.
+Prebuilt binaries, Homebrew installation, and crates.io publication are planned. The installed binary is **`glance-panel`**.
 
-`glance-panel attach` itself is idempotent: if a sibling pane already runs glance it
-stops; if a sibling pane is an idle shell (what herdr leaves behind after a
-server restart) it starts the panel there instead of splitting; otherwise it
-splits. It waits for the new shell's prompt before typing the command and
-confirms the panel came up. A brand-new session has no transcript until its
-first prompt, so the panel starts in a waiting state and fills in from there.
-After `/clear`, the panel follows the pane to the new session on the next
-status change.
+## Small controls, useful context
 
-## Use
+| Key | Action |
+| :--- | :--- |
+| `j` / `k` | Scroll down / up |
+| `r` | Request another summary |
+| `v` | Toggle panel / rail view |
+| `[` / `]` | Move between workstreams |
+| `0` | Show all workstreams |
+| `p` | Toggle pinned focus / follow the conversation |
+| `q` | Quit |
 
-```sh
-glance-panel attach            # from a shell in a Claude Code pane: split right, start the panel
-# From a running Claude Code session, type this at the Claude prompt (the ! prefix runs it in that pane):
-#   ! glance-panel attach
-glance-panel attach --ratio 0.35   # wider panel
-glance-panel --pane w7:p5      # follow a specific herdr pane
-glance-panel --session <id>    # follow a session directly, no herdr needed
-glance-panel summarize --session <id>  # print the summary JSON, seed the cache, exit
-```
+<details>
+<summary><strong>Explore the rail view</strong></summary>
 
-The summary model is Claude Sonnet by default. Set `GLANCE_MODEL` to change it,
-for example `GLANCE_MODEL=claude-haiku-4-5-20251001`.
+<br>
+<img src="assets/readme/rail.svg" alt="Illustrative rail view with a trunk and two workstream lanes, showing plan steps, questions, and decisions in transcript order." width="800">
 
-Keys in the panel: `q` quit, `r` re-run the summary, `j`/`k` scroll, `v` rail view.
-With branches: `[` and `]` move focus, `0` shows everything, `p` toggles between
-following the conversation and staying pinned.
+The rail arranges summary items by transcript turn and workstream. A workstream is a thread of work, such as reviewing a PR; it is separate from a Git branch. Narrow panes fold extra lanes into a count. This illustration uses fictional content.
 
-## Branches
+</details>
 
-A session often carries several threads at once: one session reviews every open
-PR (the trunk) and works each PR on its own (a branch each). When the model finds
-threads like that, the panel shows a `BRANCHES` strip under NOW with each thread
-and its state (active, parked, done), highlights the one the newest turns belong
-to, and filters the plan, questions and decisions to it, with trunk items dimmed.
-Focus follows the conversation until you move it yourself; `p` lets go again.
+## Designed to stay out of the way
 
-Branches are threads of work, not git branches and not forks in the message
-tree. Most sessions have none, and then the strip does not appear.
+- Transcript metadata supplies the title, branch, linked PR, and other available fields.
+- A background model pass updates the summary after activity settles, while herdr supplies working/idle status.
+- Versioned caches live in `~/.glance/`; a heuristic provides initial context when no cache exists.
+- `--no-model` displays metadata and cached context without starting a summary invocation.
 
-`v` switches to the rail: the trunk and one lane per branch, time flowing down,
-one row per plan step, question, decision or blocker, placed on the lane of its
-branch at the turn it appeared. Lanes that do not fit the pane fold into a
-`+n more` marker and their items are tagged with the branch name instead.
+Summaries are interpretations and can be incomplete or wrong. Check the conversation for consequential details. Read [privacy and data handling](docs/privacy.md) for what is read, saved, and passed to Claude.
 
-## Files it touches
+## Find your way around
 
-- `~/.glance/<session>.json`: cached panel state per session.
-- `~/.glance/config.json` and `~/.glance/hook.log`: the hook offer answer and hook decisions.
-- `~/.claude/settings.json`: only when you accept the hook offer or run `glance-panel hook --install`.
-- Transcripts are read, never written.
-
-## Logo
-
-`assets/logo/glance.svg` (mark) and `glance-lockup.svg` (mark and wordmark). The
-other drafts are kept under `assets/logo/drafts/`.
+| Guide | What you will find |
+| :--- | :--- |
+| [Usage](docs/usage.md) | Attach, sessions, focus, configuration, and files |
+| [Troubleshooting](docs/troubleshooting.md) | Empty panels, hooks, model failures, and recovery |
+| [Architecture](docs/architecture.md) | Transcript → summary → terminal, and module boundaries |
+| [Roadmap](ROADMAP.md) | Shipped capabilities and planned milestones |
+| [Implementation checklist](docs/implementation-checklist.md) | Detailed work plan and validation gates |
+| [Changelog](CHANGELOG.md) | Changes by version |
 
 ## Contributing
 
-Issues and pull requests are welcome. Run `cargo fmt`, `cargo clippy --all-targets -- -D warnings`
-and `cargo test` before opening one; CI runs the same three on macOS and Linux.
-The [roadmap](ROADMAP.md) lists what is planned and the notes for picking each item up.
+Bug reports, focused improvements, and documentation fixes are welcome. Start with the [contribution guide](CONTRIBUTING.md). Please use [private reporting](SECURITY.md) for security concerns.
 
-## License
-
-Apache-2.0. See [LICENSE](LICENSE).
+Licensed under [Apache 2.0](LICENSE).
