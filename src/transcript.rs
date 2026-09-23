@@ -36,6 +36,8 @@ pub struct Transcript {
     pub session_id: String,
     offset: u64,
     partial: Vec<u8>,
+    /// Hashes of sampled blocks of consumed bytes; see `consumed_unchanged`.
+    checks: Vec<(u64, u64)>,
     tail: Vec<u8>,
     /// Parsed records of a line-delimited agent transcript, kept so appends are parsed once.
     records: Vec<Value>,
@@ -112,6 +114,7 @@ impl Transcript {
             session_id: String::new(),
             offset: 0,
             partial: Vec::new(),
+            checks: Vec::new(),
             tail: Vec::new(),
             records: Vec::new(),
             revision: 0,
@@ -146,15 +149,15 @@ impl Transcript {
             Err(e) => return Err(e.into()),
         };
         let mut replaced = file.metadata()?.len() < self.offset;
-        if !replaced && !self.tail.is_empty() {
-            file.seek(SeekFrom::Start(self.offset - self.tail.len() as u64))?;
-            let mut tail = vec![0; self.tail.len()];
-            file.read_exact(&mut tail)?;
-            replaced = tail != self.tail;
+        if !replaced && self.offset != 0 {
+            // A transcript can be rewritten earlier while its length and last record
+            // stay unchanged; check samples of the consumed bytes before appending.
+            replaced = !self.consumed_unchanged(&mut file)?;
         }
         if replaced {
             self.offset = 0;
             self.partial.clear();
+            self.checks.clear();
             self.tail.clear();
             self.records.clear();
             self.turns.clear();
@@ -186,11 +189,7 @@ impl Transcript {
                 }
             }
         }
-        let mut file = reader.into_inner();
-        let tail_len = self.offset.min(128) as usize;
-        file.seek(SeekFrom::Start(self.offset - tail_len as u64))?;
-        self.tail.resize(tail_len, 0);
-        file.read_exact(&mut self.tail)?;
+        self.record_checks(&mut reader.into_inner())?;
         if !claude && (replaced || self.records.len() != records_before) {
             // Folding parsed records is in-memory; only new bytes were read and parsed.
             let snapshot = crate::harness::fold(self.harness, &self.records)?;
@@ -355,6 +354,38 @@ impl Transcript {
         })
     }
 
+    /// Whether the consumed bytes still match. Re-reading the whole prefix on every append
+    /// would cost O(size) per change, so compare the retained tail plus one 4 KiB sample per
+    /// MiB (about 0.4% of the file). An edit confined to unsampled bytes is not detected.
+    fn consumed_unchanged(&self, file: &mut File) -> Result<bool> {
+        for &(start, hash) in &self.checks {
+            if block_hash(file, start)? != hash {
+                return Ok(false);
+            }
+        }
+        file.seek(SeekFrom::Start(self.offset - self.tail.len() as u64))?;
+        let mut tail = vec![0; self.tail.len()];
+        file.read_exact(&mut tail)?;
+        Ok(tail == self.tail)
+    }
+
+    /// Record newly consumed sample blocks and the bytes just before the read offset.
+    fn record_checks(&mut self, file: &mut File) -> Result<()> {
+        loop {
+            let start = self.checks.len() as u64 * CHECK_STRIDE;
+            if start + CHECK_BLOCK > self.offset {
+                break;
+            }
+            let hash = block_hash(file, start)?;
+            self.checks.push((start, hash));
+        }
+        let tail_len = self.offset.min(CHECK_BLOCK);
+        file.seek(SeekFrom::Start(self.offset - tail_len))?;
+        self.tail.resize(tail_len as usize, 0);
+        file.read_exact(&mut self.tail)?;
+        Ok(())
+    }
+
     /// Identifies the first `count` turns. Persisted in caches and todo files, so it
     /// must not depend on the toolchain's unspecified `DefaultHasher` algorithm.
     pub fn fingerprint(&self, count: usize) -> u64 {
@@ -416,6 +447,18 @@ fn strip_wrappers(text: &str) -> String {
         }
     }
     s.trim().to_string()
+}
+
+const CHECK_BLOCK: u64 = 4096;
+const CHECK_STRIDE: u64 = 1024 * 1024;
+
+fn block_hash(file: &mut File, start: u64) -> Result<u64> {
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = vec![0; CHECK_BLOCK as usize];
+    file.read_exact(&mut bytes)?;
+    let mut hash = StableHasher::new();
+    hash.write(&bytes);
+    Ok(hash.finish())
 }
 
 /// 64-bit FNV-1a: a fixed algorithm whose output is safe to store on disk.
@@ -536,6 +579,55 @@ mod tests {
         tr.read_new().unwrap();
         assert!(matches!(&tr.turns[0], Turn::User(s) if s == "alt"));
         assert_eq!(tr.revision, 2);
+    }
+
+    #[test]
+    fn earlier_rewrite_with_identical_tail_invalidates_evidence() {
+        use std::io::Write;
+        let last = serde_json::json!({"type":"assistant","message":{"content":[{"type":"text","text":"unchanged".repeat(1200)}]}}).to_string();
+        let first = r#"{"type":"user","message":{"content":"old plan"}}"#;
+        let mut tr = tr_with(&[first, &last]);
+        let old = tr.fingerprint(tr.turns.len());
+        let replacement = first.replace("old plan", "new plan");
+        std::fs::write(&tr.path, format!("{replacement}\n{last}\n")).unwrap();
+        tr.read_new().unwrap();
+        assert_eq!(tr.revision, 1);
+        assert_ne!(old, tr.fingerprint(tr.turns.len()));
+        assert!(matches!(&tr.turns[0], Turn::User(s) if s == "new plan"));
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&tr.path)
+            .unwrap();
+        writeln!(file, "{first}").unwrap();
+        assert_eq!(tr.read_new().unwrap(), 1);
+        assert_eq!(
+            tr.revision, 1,
+            "a normal append must preserve the generation"
+        );
+        assert_eq!(tr.read_new().unwrap(), 0);
+        assert_eq!(tr.revision, 1);
+    }
+
+    #[test]
+    fn rewrite_inside_a_sampled_block_of_a_large_transcript_is_detected() {
+        let line = format!(
+            "{}\n",
+            serde_json::json!({"type":"user","message":{"content":"x".repeat(1000)}})
+        );
+        let body = line.repeat(1500);
+        let mut tr = tr_with(&[]);
+        std::fs::write(&tr.path, &body).unwrap();
+        tr.read_new().unwrap();
+        assert!(tr.checks.len() >= 2, "samples at 0 and 1 MiB");
+        let before = tr.revision;
+        // Same length, same last record, changed bytes inside the 1 MiB sample.
+        let mut changed = body.into_bytes();
+        let at = CHECK_STRIDE as usize + 100;
+        let pos = at + changed[at..].iter().position(|b| *b == b'x').unwrap();
+        changed[pos] = b'y';
+        std::fs::write(&tr.path, &changed).unwrap();
+        tr.read_new().unwrap();
+        assert_eq!(tr.revision, before + 1);
     }
 
     #[test]
