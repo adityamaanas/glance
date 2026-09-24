@@ -25,7 +25,7 @@ Only when you run `setup`:
 
 | Command | Changes | Backup |
 | --- | --- | --- |
-| `glance-panel setup` | Adds Glance's hooks to Claude Code's `settings.json` (`~/.claude/`, or `CLAUDE_CONFIG_DIR`) | `settings.json.bak-glance` |
+| `glance-panel setup` | Adds Glance's hooks to Claude Code's `settings.json` (`~/.claude/`, or `CLAUDE_CONFIG_DIR`) | `settings.json.bak-glance`, kept from the first change |
 | `glance-panel setup --harness cursor` | Adds hooks to `~/.cursor/hooks.json` and writes `~/.cursor/hooks/glance-capture.sh` (`.cmd` on Windows) | `hooks.json.bak-glance`, kept from the first change |
 
 `--remove` removes only Glance's entries; your other hooks are untouched. Glance never modifies agent transcripts or databases.

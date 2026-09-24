@@ -42,6 +42,12 @@ installers, five platforms). Planned channels, in order:
 - **Other package managers** (for example winget, Scoop, AUR or Nix) once there
   is demand.
 
+## Documentation site
+
+Publish `docs/` as a searchable site (mdBook suits a Rust project), built from
+the same Markdown files and deployed from CI, so the pages stay the single
+source. See the [documentation standard](docs/STANDARD.md#6-next).
+
 ## Live validation work
 
 - Record authenticated live CLI versions for each provider and test actual
