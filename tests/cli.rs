@@ -134,6 +134,8 @@ fn setup_is_idempotent_preserves_other_hooks_and_stop_records_no_text() {
             .to_string(),
     )
     .unwrap();
+    let original = std::fs::read(&settings).unwrap();
+    let backup = settings.with_extension("json.bak-glance");
     let run = |args: &[&str]| {
         let out = Command::new(env!("CARGO_BIN_EXE_glance-panel"))
             .env("GLANCE_HOME", dir.path().join("state"))
@@ -180,6 +182,8 @@ fn setup_is_idempotent_preserves_other_hooks_and_stop_records_no_text() {
         value["hooks"]["Stop"],
         serde_json::json!([{"hooks":[unrelated]}])
     );
+    // Every run rewrote settings.json; the backup still holds the user's original.
+    assert_eq!(std::fs::read(&backup).unwrap(), original);
 }
 
 #[test]

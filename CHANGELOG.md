@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `glance-panel setup` no longer overwrites its backup of Claude Code's `settings.json` on every run. The backup now keeps the file as it was before Glance first changed it, as Cursor setup already did.
 - Release notes no longer suggest `brew install glance-panel`, which does not work until a Homebrew tap exists. Use the one-line installers.
 
 ## 0.3.0 (2026-09-23)

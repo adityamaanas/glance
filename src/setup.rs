@@ -78,8 +78,10 @@ fn read_settings() -> Result<Value> {
 
 fn write_settings(v: &Value) -> Result<()> {
     let path = settings_path()?;
-    if path.exists() {
-        std::fs::copy(&path, path.with_extension("json.bak-glance"))?;
+    // Keep the first backup: it is the only copy from before Glance changed the file.
+    let backup = path.with_extension("json.bak-glance");
+    if path.exists() && !backup.exists() {
+        std::fs::copy(&path, backup)?;
     }
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
